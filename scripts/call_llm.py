@@ -71,7 +71,8 @@ def format_batch(items: list[dict[str, Any]]) -> str:
     """Format text items as [1]...[N] tagged blocks."""
     lines = []
     for i, item in enumerate(items, 1):
-        lines.append(f"[{i}] {item['text']}")
+        text = item.get("text") or item.get("source_text") or ""
+        lines.append(f"[{i}] {text}")
     return "\n".join(lines)
 
 
@@ -199,11 +200,12 @@ def cmd_translate(args: argparse.Namespace) -> None:
 
         for i, item in enumerate(batch):
             trans = translations[i] if i < len(translations) else ""
+            source = item.get("text") or item.get("source_text") or ""
             all_translations.append({
                 "page_id": item.get("page_id"),
                 "node_id": item.get("node_id"),
                 "page_name": item.get("page_name", ""),
-                "source_text": item["text"],
+                "source_text": source,
                 "translation": trans,
             })
 
