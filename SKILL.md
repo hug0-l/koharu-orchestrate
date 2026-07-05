@@ -448,12 +448,21 @@ koharu.start_pipeline {
 koharu.start_pipeline {
   "steps": ["koharu-renderer"],
   "targetLanguage": "Chinese",
-  "defaultFont": "Noto Sans SC"
+  "defaultFont": ".PingFang SC"    // macOS 內建中文字型
 }
 ```
 
 - `targetLanguage`：影響斷字、字型選取
-- `defaultFont`：字型名稱。可用 `GET /api/v1/fonts` 列出系統可用字型
+- `defaultFont`：字型名稱。**務必先用以下指令確認系統可用字型再設定：**
+  ```bash
+  curl -s $KOHARU_URL/api/v1/fonts | python3 -c "
+  import sys,json
+  fonts = json.load(sys.stdin)
+  cjk = [f for f in fonts if any(kw in f.get('familyName','') for kw in ['SC','TC','CJK','Song','Ming','Hei','Gothic'])]
+  for f in set(cjk): print(f)
+  "
+  ```
+  若不指定 `defaultFont`，Koharu 會自動 fallback 到系統字型。
 
 ### 步驟 11：最終審查
 
