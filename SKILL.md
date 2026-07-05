@@ -202,11 +202,66 @@ koharu.start_pipeline {
 
 > `paddle-ocr-vl-1.6` 需要較多 VRAM。若資源有限，可換 `manga-ocr` 或 `mit48px-ocr`。
 
-### 步驟 7：Agent 翻譯（核心步驟）
+### 步驟 6.5：分析頁面品質與保護（可選但建議）
 
-這是整個流程的核心 — Agent **用自己的 LLM 能力**翻譯。
+OCR 完成後，分析哪些頁面品質不足以翻譯（封面、裝飾頁、低信度 OCR），自動保護跳過：
 
-#### 7a. 讀取 OCR 文字
+```bash
+# 分析並顯示報告
+<PFX> -m analyze --server $KOHARU_URL
+
+# 輸出 JSON 供 agent 進一步處理
+<PFX> -m analyze --server $KOHARU_URL --json > analysis.json
+
+# 自動保護低品質頁面（清除 OCR text 使翻譯階段跳過）
+<PFX> -m analyze --server $KOHARU_URL --apply-protection
+```
+
+保護判斷邏輯：
+- **封面頁**：文字 node 數 ≤ 3 且全為短裝飾文字
+- **無 OCR 頁**：detect 有框到文字區但 OCR 沒讀到內容
+- **低信度頁**：平均 confidence < 0.3
+- **裝飾頁**：文字全為符號/點/非語言內容
+
+agent 可先看 report，再用 `--apply-protection` 或手動 `koharu.apply removeNode` 剔除誤判框。
+
+### 步驟 6.6：偵測章節邊界與生成摘要（可選但建議）
+
+翻譯前先了解漫畫的章節結構，讓 agent 翻譯時有上下文脈絡：
+
+```bash
+# 偵測章節邊界
+<PFX> -m chapter detect --server $KOHARU_URL
+
+# 輸出 JSON 供 agent 生成摘要
+<PFX> -m chapter detect --server $KOHARU_URL --json > chapters.json
+```
+
+自動偵測方式：
+1. **明確章節標記**：`第1話`、`Chapter 1`、`VOL.1` 等
+2. **自然分段**：偵測頁面之間的間隔頁（文字極少的頁面）作為章節邊界
+3. **無標記時**：整卷視為一個章節
+
+取得章節結構後，agent 為每個章節生成摘要（供翻譯時參考上下文）：
+
+```
+chapters.json → agent 用 LLM 或 DeepSeek API 為每章生成 2-3 句摘要
+              → 摘要注入翻譯 prompt 的 system message
+              → agent 翻譯時知道這章在講什麼，人物/語氣更一致
+```
+
+### 步驟 7：翻譯（核心步驟 — 選 A 或 B）
+
+翻譯階段提供兩種模式，依速度和品質需求選擇。
+
+**選項 A（建議首次使用）：Agent 自身 LLM 翻譯**
+**選項 B（大量頁面時更快）：DeepSeek / OpenAI-compatible API 批次翻譯**
+
+---
+
+#### 選項 A：Agent 自身 LLM 翻譯
+
+##### 7a. 讀取 OCR 文字
 
 ```bash
 curl -s $KOHARU_URL/api/v1/scene.json > scene.json
@@ -218,7 +273,7 @@ curl -s $KOHARU_URL/api/v1/scene.json > scene.json
 - `text` (OCR 辨識結果)
 - `confidence` (可選，過濾低信度辨識)
 
-#### 7b. 格式化為標籤區塊
+##### 7b. 格式化為標籤區塊
 
 對每一頁，按閱讀順序（從 scene.json 中 node 的排列順序）將文字格式化為：
 
@@ -231,18 +286,19 @@ curl -s $KOHARU_URL/api/v1/scene.json > scene.json
 
 記錄每個 `[N]` 對應的 `(page_id, node_id)`。
 
-#### 7c. 套用術語表 + 翻譯規則翻譯
+##### 7c. 套用術語表 + 章節摘要 + 翻譯規則翻譯
 
 翻譯時遵循：
 
 1. **通用規則**：見 `references/translation_rules.md`（逐行對應、保留標記、人名保留/翻譯）
-2. **術語表**：見 `$WORK/work/glossary.locked.json`（若不存在則第一次翻譯前需建立）
-3. **人物名稱**：依術語表 `characters[].render`：
+2. **章節摘要**：步驟 6.6 產生的摘要注入 system message，讓翻譯有上下文
+3. **術語表**：見 `$WORK/work/glossary.locked.json`（若不存在則第一次翻譯前需建立）
+4. **人物名稱**：依術語表 `characters[].render`：
    - 英文值 → 保留原文
    - 非英文值 → 使用該譯名
-4. **專有名詞**：依術語表 `terms[].dst` 決定是否翻譯
+5. **專有名詞**：依術語表 `terms[].dst` 決定是否翻譯
 
-#### 7d. 寫回翻譯
+##### 7d. 寫回翻譯
 
 對每個 text node，用 `koharu.apply` 寫回 `translation`：
 
@@ -277,13 +333,16 @@ koharu.apply {
 }
 ```
 
-#### 7e. 翻譯提示詞範例
+##### 7e. 翻譯提示詞範例
 
 ```
 Translate the following manga dialogue into {target_language}.
 Follow the glossary for character names and terms.
 Preserve all [N] tags.
 Return only the translations, one per line, with the [N] prefix.
+
+Chapter context (for reference):
+[Chapter 1: Botan gets drunk at a party and Aria takes care of her.]
 
 Glossary:
 - Cecil → Cecil (keep source)
@@ -296,7 +355,7 @@ Glossary:
 
 `target_language` 由用戶指定（例如 `"Traditional Chinese"`、`"Korean"`）。
 
-#### 7f. 解析翻譯回應
+##### 7f. 解析翻譯回應
 
 回應範例：
 
@@ -310,7 +369,70 @@ Glossary:
 
 注意過濾 thinking block（`<think>...</think>`）、strip 包裹引號。
 
-### 步驟 8：除字（Inpaint）
+---
+
+#### 選項 B（大量頁面時更快）：DeepSeek / OpenAI-compatible API 批次翻譯
+
+適用於 50+ 頁面的大量翻譯。一次 API call 翻譯 30-50 段文字，大幅加速。
+
+```bash
+# 一次性翻譯全部 OCR 文字 → 輸出 translations.json
+call_llm.py translate \
+  --server $KOHARU_URL \
+  --api-key $DEEPSEEK_API_KEY \
+  --model deepseek-chat \
+  --backend https://api.deepseek.com/v1 \
+  --lang "Traditional Chinese" \
+  --glossary $WORK/glossary.locked.json \
+  --rules $SKILL_DIR/references/translation_rules.md \
+  --batch-size 40 \
+  --output $WORK/translations.json
+```
+
+**流程：**
+1. `call_llm.py` 從 Koharu 讀取所有 OCR text
+2. 批次格式化為 `[N]` tagged blocks
+3. 每批 40 段送 DeepSeek API（自動附帶術語表 + 翻譯規則）
+4. 解析 API 回應
+5. 輸出 `translations.json`（`page_id, node_id, translation`）
+
+**寫回 Koharu：**
+
+```bash
+# agent 將 translations.json 轉換為 batch ops 寫回
+# 可用 python 腳本或 koharu.apply
+python3 -c "
+import json
+data = json.load(open('$WORK/translations.json'))
+ops = [{'updateNode': {
+    'page': d['page_id'], 'id': d['node_id'],
+    'patch': {'data': {'text': {'translation': d['translation']}}},
+    'prev': {}
+}} for d in data if d.get('translation')]
+# 批次寫回
+import httpx
+httpx.post('$KOHARU_URL/api/v1/history/apply',
+    json={'batch': {'label': 'batch translate', 'ops': ops}})
+print(f'Written {len(ops)} translations')
+"
+```
+
+**速度對比：**
+
+| 模式 | 100 頁翻譯時間 | 成本 |
+|------|---------------|------|
+| Agent 自身 LLM | 30-60 min | 免費 |
+| DeepSeek API (batch) | 3-5 min | ~$0.10-0.50 |
+| 兩者混合 | 先用 API 批次 → agent 審查修正 | 低 + 品質可控 |
+
+### 步驟 8：審查翻譯（選項 B 專用）
+
+若使用選項 B（DeepSeek API），翻譯完成後 agent 應抽樣審查：
+- 選 3-5 頁檢視譯文品質
+- 發現系統性問題 → 修正 glossary 或 rules → 重新翻譯
+- 發現個別問題 → `koharu.apply` 手動修正
+
+### 步驟 9：除字（Inpaint）
 
 ```json
 koharu.start_pipeline {
@@ -320,7 +442,7 @@ koharu.start_pipeline {
 
 用遮罩去除原文文字。若 VRAM 夠可換 `flux2-klein`（品質更好但更慢）或 `aot-inpainting`。
 
-### 步驟 9：合成（Render）
+### 步驟 10：合成（Render）
 
 ```json
 koharu.start_pipeline {
@@ -333,7 +455,7 @@ koharu.start_pipeline {
 - `targetLanguage`：影響斷字、字型選取
 - `defaultFont`：字型名稱。可用 `GET /api/v1/fonts` 列出系統可用字型
 
-### 步驟 10：最終審查
+### 步驟 11：最終審查
 
 ```bash
 curl -s $KOHARU_URL/api/v1/scene.json | python3 -c "
@@ -354,7 +476,7 @@ for pid, page in pages.items():
 
 修正不滿意的翻譯或位置後回到步驟 7d 重跑。
 
-### 步驟 11：匯出
+### 步驟 12：匯出
 
 ```bash
 curl -s -X POST $KOHARU_URL/api/v1/projects/current/export \
@@ -369,7 +491,7 @@ curl -s -X POST $KOHARU_URL/api/v1/projects/current/export \
 - `khr`：Koharu 專案存檔
 - `inpainted`：僅除字後的圖片
 
-### 步驟 12：關閉專案
+### 步驟 13：關閉專案
 
 ```json
 koharu.close_project
@@ -381,7 +503,31 @@ koharu.close_project
 
 ### 第一次翻譯前：建立術語表
 
-**選項 A — 從 AiNiee config 匯入（已有 AiNiee 術語設定時）**
+**選項 A（推薦）— 從網路爬取官方中譯／台版譯名**
+
+自動偵測作品名稱，產生 Wikipedia 查詢連結，讓 agent 爬取官方譯名：
+
+```bash
+# 從目錄名自動偵測作品
+<PFX> -m glossary fetch \
+  --from-dir "$WORK" \
+  --out ./work/glossary.locked.json
+
+# 或直接指定作品名
+<PFX> -m glossary fetch \
+  --series "上伊那ぼたん、酔へる姿は百合の花" \
+  --out ./work/glossary.locked.json
+```
+
+產生骨架 `glossary.locked.json` 後，agent 會：
+1. `webfetch` Wikipedia 條目（zh.wikipedia.org，`?variant=zh-tw`）
+2. 從角色列表提取正式官方中譯名
+3. 比對 Bangumi / 出版社官網確認
+4. 填入 `characters[]`（日文原名 → 台版官方譯名）
+5. 填入 `terms[].dst`（作品名、關鍵術語）
+6. 用戶審查確認後鎖定
+
+**選項 B — 從 AiNiee config 匯入（已有 AiNiee 術語設定時）**
 
 ```bash
 <PFX> -m glossary import-ainiee \
@@ -389,14 +535,14 @@ koharu.close_project
   --out ./work/glossary.locked.json
 ```
 
-**選項 B — 產生空白模板手寫**
+**選項 C — 產生空白模板手寫**
 
 ```bash
 <PFX> -m glossary template \
   --out ./work/glossary.locked.json
 ```
 
-**選項 C — 直接編寫**
+**選項 D — 直接編寫**
 
 手動建立 `glossary.locked.json`，格式見 `references/glossary_format.md`。
 
@@ -426,9 +572,25 @@ $PFX -m import_epub --input book.epub --output $WORK/pages/
 # 匯入頁面到 Koharu
 $PFX -m import_pages --server $KOHARU_URL --dir $WORK/pages/ --replace
 
-# 術語表
+# 術語表（三種方式）
+$PFX -m glossary fetch --from-dir "$WORK" --out $WORK/glossary.locked.json
 $PFX -m glossary import-ainiee --config "<config.json>" --out $WORK/glossary.locked.json
 $PFX -m glossary template --out $WORK/glossary.locked.json
+
+# 分析頁面品質（保護封面/低信度頁）
+$PFX -m analyze --server $KOHARU_URL
+$PFX -m analyze --server $KOHARU_URL --apply-protection
+
+# 偵測章節邊界
+$PFX -m chapter detect --server $KOHARU_URL
+$PFX -m chapter detect --server $KOHARU_URL --json > chapters.json
+
+# DeepSeek 批次翻譯
+$PFX -m call_llm translate \
+  --server $KOHARU_URL --api-key $DEEPSEEK_API_KEY \
+  --lang "Traditional Chinese" \
+  --glossary $WORK/glossary.locked.json \
+  --output $WORK/translations.json
 
 # 檢視場景
 curl -s $KOHARU_URL/api/v1/scene.json

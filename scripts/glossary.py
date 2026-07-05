@@ -8,14 +8,22 @@ Usage:
     python glossary.py import-ainiee \
         --config ~/Library/Application\ Support/AiNiee/config.json \
         --out ./work/glossary.locked.json
+
+    # Fetch official Chinese title from Wikipedia
+    python glossary.py fetch --series "上伊那ぼたん、酔へる姿は百合の花" --out glossary.json
+    python glossary.py fetch --from-dir "./[塀] 上伊那ぼたん 第08巻" --out glossary.json
 """
 
 import argparse
 import json
+import os
 import re
 import sys
 from pathlib import Path
 from typing import Any
+
+import httpx
+from urllib.parse import quote
 
 GLOSSARY_TEMPLATE: dict[str, Any] = {
     "characters": [
@@ -125,6 +133,81 @@ def cmd_import_ainiee(args: argparse.Namespace) -> None:
     print("  Check that aliases are complete and render values are correct.")
 
 
+# ── Wikipedia fetch ──────────────────────────────────────────
+
+# ── Wikipedia fetch ──────────────────────────────────────────
+
+
+def _detect_series_from_dir(dir_path: str) -> str:
+    """Extract series name from a directory path like '[塀] 上伊那ぼたん 第08巻'."""
+    name = Path(dir_path).name
+    # Remove brackets content like [塀]
+    name = re.sub(r"^\[.*?\]\s*", "", name)
+    # Remove volume suffix: 第08巻, Vol.8, v08, etc.
+    name = re.sub(r"[第\s]*(?:Vol\.?|v|volume|巻|話|話数)?\s*\.?\s*\d+[\s\-]*.*$", "", name)
+    # Remove trailing spaces/dashes
+    name = name.strip(" ␣　-–—")
+    # If nothing left, use parent dir
+    if not name:
+        name = Path(dir_path).parent.name
+    return name
+
+
+def cmd_fetch(args: argparse.Namespace) -> None:
+    """Detect series name and generate lookup URLs. Agent then uses webfetch."""
+
+    series = args.series
+    if not series and args.from_dir:
+        series = _detect_series_from_dir(args.from_dir)
+        print(f"Detected series name: {series}", file=sys.stderr)
+    if not series:
+        print("Error: specify --series or --from-dir", file=sys.stderr)
+        sys.exit(1)
+
+    # Build search URLs for agent to webfetch
+    wiki_search_url = (
+        f"https://zh.wikipedia.org/w/index.php?"
+        f"search={quote(series)}&variant=zh-tw"
+    )
+
+    glossary: dict[str, Any] = {
+        "characters": [],
+        "terms": [{
+            "src": series,
+            "dst": series,
+            "category": "series",
+            "_search_urls": {
+                "wikipedia_zh": wiki_search_url,
+                "wikipedia_ja": f"https://ja.wikipedia.org/wiki/{quote(series)}",
+                "bangumi": f"https://bgm.tv/subject_search/{quote(series)}?cat=1",
+            }
+        }],
+        "non_translate": [],
+        "_series_raw": series,
+        "_agent_instructions": (
+            f"1. Use webfetch to search Wikipedia: {wiki_search_url}\n"
+            f"2. Find the official Traditional Chinese title and character names\n"
+            f"3. Also check Bangumi or the publisher's site for official translations\n"
+            f"4. Fill in the 'characters' array with {{{{canonical, render, aliases}}}}\n"
+            f"5. Set the series term's 'dst' to the official Chinese title\n"
+            f"6. Review and lock the glossary before translating"
+        ),
+        "_note": "Auto-generated skeleton — agent must webfetch sources and fill in",
+    }
+
+    out = Path(args.out)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    with open(out, "w", encoding="utf-8") as f:
+        json.dump(glossary, f, ensure_ascii=False, indent=2)
+
+    print(f"Written: {out.resolve()}", file=sys.stderr)
+    print(f"\nAgent workflow:", file=sys.stderr)
+    print(f"  1. webfetch \"{wiki_search_url}\"", file=sys.stderr)
+    print(f"  2. Extract official Chinese title + character names", file=sys.stderr)
+    print(f"  3. Fill glossary characters and terms", file=sys.stderr)
+    print(f"  4. Lock glossary before translating", file=sys.stderr)
+
+
 def _looks_like_name(src: str, dst: str) -> bool:
     """Heuristic: if both src and dst are short capitalized words, treat as name."""
     return bool(
@@ -161,12 +244,20 @@ def main():
     imp.add_argument("--config", "-c", required=True, help="AiNiee config.json path")
     imp.add_argument("--out", "-o", required=True, help="Output path")
 
+    # fetch
+    fet = subparsers.add_parser("fetch", help="Fetch official Chinese title from Wikipedia")
+    fet.add_argument("--series", "-s", help="Series name (Japanese or English)")
+    fet.add_argument("--from-dir", "-d", help="Directory path to auto-detect series name")
+    fet.add_argument("--out", "-o", required=True, help="Output path")
+
     args = parser.parse_args()
 
     if args.command == "template":
         cmd_template(args)
     elif args.command == "import-ainiee":
         cmd_import_ainiee(args)
+    elif args.command == "fetch":
+        cmd_fetch(args)
 
 
 if __name__ == "__main__":
