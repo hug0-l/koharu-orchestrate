@@ -6,65 +6,76 @@
 
 ## Op（操作）
 
-所有 Op 透過 `koharu.apply` 套用到場景。Op 是 tagged JSON（`type` 欄位區分）。
+所有 Op 透過 `koharu.apply` 套用到場景。Op 是 **internally-tagged enum**，變體名稱用 snake_case。
 
-### UpdateNode（最常用 — 修改翻譯）
+> ⚠ Op JSON 格式：`{"updateNode": { ... }}`，**不是** `{"type": "UpdateNode", ...}`。
+
+### updateNode（最常用 — 修改翻譯）
+
+`NodePatch` 使用巢狀結構：`patch → data → {text|image|mask} → fields`。
 
 ```json
 {
-  "type": "UpdateNode",
-  "page": "page-uuid-v7",
-  "id": "node-uuid-v7",
-  "patch": {
-    "text": "new OCR text",
-    "translation": "譯文",
-    "confidence": 0.95,
-    "style": { "fontSize": 16, "textAlign": "left" },
-    "visible": true,
-    "transform": { "x": 100, "y": 200, "width": 300, "height": 50, "rotationDeg": 0 }
-  },
-  "prev": {}
+  "updateNode": {
+    "page": "page-uuid-v7",
+    "id": "node-uuid-v7",
+    "patch": {
+      "data": {
+        "text": {
+          "translation": "譯文",
+          "text": "new OCR text",
+          "confidence": 0.95
+        }
+      },
+      "visible": true,
+      "transform": { "x": 100, "y": 200, "width": 300, "height": 50, "rotationDeg": 0 }
+    },
+    "prev": {}
+  }
 }
 ```
 
 `prev` 由 Koharu 自動填寫（undo 用），agent 可省略或傳空物件。
 
-### UpdateProjectMeta
+`patch.data` 的變體與 `NodeKind` 對應（`text` / `image` / `mask`）。
+`TextDataPatch` 可用欄位：`translation`、`text`、`confidence`、`style`、`fontPrediction`、`sprite`、`spriteTransform`、`renderedDirection`、`sourceDirection`、`rotationDeg`、`detectedFontSizePx`、`detector`、`lockLayoutBox`。
+
+### updateProjectMeta
 
 ```json
-{ "type": "UpdateProjectMeta", "patch": { "name": "New Name" }, "prev": {} }
+{ "updateProjectMeta": { "patch": { "name": "New Name" }, "prev": {} } }
 ```
 
-### AddPage
+### addPage
 
 ```json
-{ "type": "AddPage", "page": { "id": "...", "name": "...", "width": 1200, "height": 1800, "nodes": {} }, "at": 0 }
+{ "addPage": { "page": { "id": "...", "name": "...", "width": 1200, "height": 1800, "nodes": {} }, "at": 0 } }
 ```
 
-### RemovePage
+### removePage
 
 ```json
-{ "type": "RemovePage", "id": "page-uuid", "prevPage": {}, "prevIndex": 0 }
+{ "removePage": { "id": "page-uuid", "prevPage": {}, "prevIndex": 0 } }
 ```
 
-### UpdatePage
+### updatePage
 
 ```json
-{ "type": "UpdatePage", "id": "page-uuid", "patch": { "name": "page-001" }, "prev": {} }
+{ "updatePage": { "id": "page-uuid", "patch": { "name": "page-001" }, "prev": {} } }
 ```
 
-### AddNode
+### addNode
 
 ```json
 {
-  "type": "AddNode",
-  "page": "page-uuid",
-  "node": {
-    "id": "new-node-uuid",
-    "transform": { "x": 0, "y": 0, "width": 100, "height": 50, "rotationDeg": 0 },
-    "visible": true,
-    "kind": {
-      "Text": {
+  "addNode": {
+    "page": "page-uuid",
+    "node": {
+      "id": "new-node-uuid",
+      "transform": { "x": 0, "y": 0, "width": 100, "height": 50, "rotationDeg": 0 },
+      "visible": true,
+      "kind": {
+        "text": {
         "text": "source text",
         "translation": "譯文",
         "confidence": null,
@@ -86,28 +97,30 @@
 }
 ```
 
-### RemoveNode
+### removeNode
 
 ```json
-{ "type": "RemoveNode", "page": "page-uuid", "id": "node-uuid", "prevNode": {}, "prevIndex": 0 }
+{ "removeNode": { "page": "page-uuid", "id": "node-uuid", "prevNode": {}, "prevIndex": 0 } }
 ```
 
-### ReorderNodes
+### reorderNodes
 
 ```json
-{ "type": "ReorderNodes", "page": "page-uuid", "order": ["node-id-1", "node-id-2", ...], "prevOrder": [] }
+{ "reorderNodes": { "page": "page-uuid", "order": ["node-id-1", "node-id-2"], "prevOrder": [] } }
 ```
 
-### Batch（批次操作 — 建議用於一頁內多個修改）
+### batch（批次操作 — 建議用於一頁內多個修改）
 
 ```json
 {
-  "type": "Batch",
-  "ops": [
-    { "type": "UpdateNode", "page": "page-1", "id": "node-1", "patch": { "translation": "譯文1" }, "prev": {} },
-    { "type": "UpdateNode", "page": "page-1", "id": "node-2", "patch": { "translation": "譯文2" }, "prev": {} }
-  ],
-  "label": "translate page 1"
+  "batch": {
+    "ops": [
+      { "addNode": { "page": "page-uuid", ... } },
+      { "updateNode": { "page": "page-uuid", "id": "...", "patch": { "translation": "譯文1" }, "prev": {} } },
+      { "updateNode": { "page": "page-uuid", "id": "...", "patch": { "translation": "譯文2" }, "prev": {} } }
+    ],
+    "label": "translate page 1"
+  }
 }
 ```
 

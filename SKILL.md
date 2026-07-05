@@ -175,8 +175,7 @@ curl -s $KOHARU_URL/api/v1/scene.json | python3 -m json.tool
 ```json
 // 移除誤判文字框
 koharu.apply {
-  "op": {
-    "type": "RemoveNode",
+  "removeNode": {
     "page": "<pageId>",
     "id": "<nodeId>"
   }
@@ -249,26 +248,29 @@ curl -s $KOHARU_URL/api/v1/scene.json > scene.json
 
 ```json
 koharu.apply {
-  "op": {
-    "type": "UpdateNode",
+  "updateNode": {
     "page": "<pageId>",
     "id": "<nodeId>",
     "patch": {
-      "translation": "譯文內容"
-    }
+      "data": {
+        "text": {
+          "translation": "譯文內容"
+        }
+      }
+    },
+    "prev": {}
   }
 }
 ```
 
-建議對**同一頁**的所有 node，包成一個 `Batch` op：
+建議對**同一頁**的所有 node，包成一個 `batch` op：
 
 ```json
 koharu.apply {
-  "op": {
-    "type": "Batch",
+  "batch": {
     "ops": [
-      { "type": "UpdateNode", "page": "...", "id": "...", "patch": { "translation": "..." } },
-      { "type": "UpdateNode", "page": "...", "id": "...", "patch": { "translation": "..." } }
+      { "updateNode": { "page": "...", "id": "...", "patch": { "data": { "text": { "translation": "..." } } }, "prev": {} } },
+      { "updateNode": { "page": "...", "id": "...", "patch": { "data": { "text": { "translation": "..." } } }, "prev": {} } }
     ],
     "label": "translate page 1"
   }
