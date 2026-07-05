@@ -188,7 +188,7 @@ def cmd_fetch(args: argparse.Namespace) -> None:
             f"1. Use webfetch to search Wikipedia: {wiki_search_url}\n"
             f"2. Find the official Traditional Chinese title and character names\n"
             f"3. Also check Bangumi or the publisher's site for official translations\n"
-            f"4. Fill in the 'characters' array with {{{{canonical, render, aliases}}}}\n"
+            f"4. Fill in the 'characters' array with {{canonical, render, aliases}}\n"
             f"5. Set the series term's 'dst' to the official Chinese title\n"
             f"6. Review and lock the glossary before translating"
         ),

@@ -16,6 +16,7 @@ import json
 import re
 import sys
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 import httpx
@@ -175,48 +176,40 @@ def report(analyses: list[PageAnalysis]) -> None:
     print(f"  With translation: {total_translated}")
 
 
-def apply_protection(server_url: str, analyses: list[PageAnalysis]) -> None:
-    """Apply protection by clearing text content from protected pages
-    so the translation step skips them."""
+def apply_protection(server_url: str, analyses: list[PageAnalysis], output: str | None = None) -> None:
+    """Write protected page IDs to a JSON file so the translation step can skip them.
+    Non-destructive — does not modify scene data."""
     protected = [a for a in analyses if a.protect_reason]
     if not protected:
         print("No pages to protect.")
         return
 
-    print(f"Protecting {len(protected)} pages...")
-    ops = []
-    for a in protected:
-        for b in a.blocks:
-            if b.has_ocr and not b.has_translation:
-                ops.append({
-                    "updateNode": {
-                        "page": a.page_id,
-                        "id": b.node_id,
-                        "patch": {
-                            "data": {
-                                "text": {
-                                    "text": None,  # Clear OCR text so translate skips it
-                                }
-                            }
-                        },
-                        "prev": {},
-                    }
-                })
+    out_path = Path(output or "protected_pages.json")
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    data = {
+        "protected_pages": [
+            {
+                "page_id": a.page_id,
+                "page_name": a.page_name,
+                "protect_reason": a.protect_reason,
+            }
+            for a in protected
+        ]
+    }
+    with open(out_path, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
 
-    if ops:
-        batch = {"batch": {"label": f"protect {len(protected)} pages", "ops": ops}}
-        r = httpx.post(f"{server_url}/api/v1/history/apply", json=batch, timeout=30)
-        if r.status_code == 200:
-            print(f"Protected {len(protected)} pages ({len(ops)} blocks).")
-            print("These pages will be skipped during translation.")
-        else:
-            print(f"Error: {r.status_code} {r.text[:200]}", file=sys.stderr)
-    else:
-        print("Nothing to protect (all blocks already processed).")
+    print(f"Protected {len(protected)} pages.")
+    print(f"Written: {out_path.resolve()}")
+    print("The translation step will skip these pages.")
 
 
 def cmd_analyze(args: argparse.Namespace) -> None:
-    scene = fetch_scene(args.server)
+    try:
+        scene = fetch_scene(args.server)
+    except Exception as e:
+        print(f"Error: cannot fetch scene from {args.server}: {e}", file=sys.stderr)
+        sys.exit(1)
     analyses = analyze_pages(scene, args.confidence)
 
     if args.json:
@@ -251,7 +244,11 @@ def cmd_analyze(args: argparse.Namespace) -> None:
         report(analyses)
 
     if args.apply_protection:
-        apply_protection(args.server, analyses)
+        try:
+            apply_protection(args.server, analyses, args.protection_output)
+        except Exception as e:
+            print(f"Error writing protection file: {e}", file=sys.stderr)
+            sys.exit(1)
 
 
 def main():
@@ -259,7 +256,8 @@ def main():
     parser.add_argument("--server", default="http://localhost:4000", help="Koharu server URL")
     parser.add_argument("--confidence", type=float, default=0.3, help="Confidence threshold (default: 0.3)")
     parser.add_argument("--json", action="store_true", help="Output machine-readable JSON")
-    parser.add_argument("--apply-protection", action="store_true", help="Apply protection to low-quality pages")
+    parser.add_argument("--apply-protection", action="store_true", help="Mark low-quality pages to skip translation (non-destructive)")
+    parser.add_argument("--protection-output", default="protected_pages.json", help="Output path for protection list (default: protected_pages.json)")
     args = parser.parse_args()
     cmd_analyze(args)
 

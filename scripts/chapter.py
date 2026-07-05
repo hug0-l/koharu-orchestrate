@@ -13,6 +13,7 @@ Usage:
 
 import argparse
 import json
+import os
 import re
 import sys
 from dataclasses import dataclass, field
@@ -305,34 +306,12 @@ def output_json(va: VolumeAnalysis) -> dict[str, Any]:
     return result
 
 
-def apply_tags(server_url: str, va: VolumeAnalysis) -> None:
-    """Add chapter metadata as translations (for reference) or tags."""
-    pages_data = {p["id"]: p for p in va.pages}
-
-    ops = []
-    for ch in va.chapters:
-        for page_id in ch.pages:
-            page = pages_data.get(page_id)
-            if not page:
-                continue
-            # Add a note-like translation to the first block if empty
-            # This is a lightweight way to embed chapter info
-            page_nodes = []  # We'd need to re-fetch scene for this
-            ops.append({
-                "tag": "chapter",
-                "page_id": page_id,
-                "chapter_index": ch.index,
-                "chapter_label": ch.label,
-            })
-
-    # For now, just output the tag structure
-    print(json.dumps(ops, ensure_ascii=False, indent=2))
-    print(f"\nWould tag {len(ops)} pages with chapter info.", file=sys.stderr)
-    print("Apply via script with --apply-tags to write to scene.", file=sys.stderr)
-
-
 def cmd_detect(args: argparse.Namespace) -> None:
-    scene = fetch_scene(args.server)
+    try:
+        scene = fetch_scene(args.server)
+    except Exception as e:
+        print(f"Error: cannot fetch scene from {args.server}: {e}", file=sys.stderr)
+        sys.exit(1)
     va = detect_chapters(scene)
 
     if args.json:
@@ -340,9 +319,6 @@ def cmd_detect(args: argparse.Namespace) -> None:
         print(json.dumps(data, ensure_ascii=False, indent=2))
     else:
         report(va)
-
-    if args.apply_tags:
-        apply_tags(args.server, va)
 
 
 def main():
@@ -352,7 +328,6 @@ def main():
     d = sub.add_parser("detect", help="Detect chapter boundaries from OCR text")
     d.add_argument("--server", default="http://localhost:4000", help="Koharu server URL")
     d.add_argument("--json", action="store_true", help="Output machine-readable JSON")
-    d.add_argument("--apply-tags", action="store_true", help="Write chapter metadata to scene")
     args = parser.parse_args()
 
     cmd_detect(args)

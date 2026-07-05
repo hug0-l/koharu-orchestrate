@@ -23,6 +23,7 @@ Usage:
 import argparse
 import json
 import os
+import re
 import sys
 from pathlib import Path
 from typing import Any
@@ -78,17 +79,16 @@ def format_batch(items: list[dict[str, Any]]) -> str:
 
 def parse_response(response_text: str, batch_len: int) -> list[str]:
     """Parse tagged [N] response back into per-item translations."""
-    translations: list[str] = []
-    for i in range(1, batch_len + 1):
-        prefix = f"[{i}]"
-        for line in response_text.split("\n"):
-            line = line.strip()
-            if line.startswith(prefix):
-                trans = line[len(prefix):].strip()
-                translations.append(trans)
-                break
-        else:
-            translations.append("")
+    # Strip think blocks
+    text = re.sub(r"<think>.*?</think>", "", response_text, flags=re.DOTALL)
+    translations: list[str] = [""] * batch_len
+    pattern = re.compile(r"^\[(\d+)\]\s*(.*)")
+    for line in text.split("\n"):
+        m = pattern.match(line.strip())
+        if m:
+            idx = int(m.group(1))
+            if 1 <= idx <= batch_len:
+                translations[idx - 1] = m.group(2).strip()
     return translations
 
 
@@ -156,7 +156,11 @@ def cmd_translate(args: argparse.Namespace) -> None:
 
     # Read items
     if args.server:
-        items = read_scene_text(args.server)
+        try:
+            items = read_scene_text(args.server)
+        except Exception as e:
+            print(f"Error: cannot fetch scene from {args.server}: {e}", file=sys.stderr)
+            sys.exit(1)
         print(f"Read {len(items)} text nodes from Koharu", file=sys.stderr)
     elif args.input:
         with open(args.input, "r", encoding="utf-8") as f:

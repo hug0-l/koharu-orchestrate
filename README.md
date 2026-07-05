@@ -65,6 +65,7 @@ export WORK="$HOME/my-manga"
 | `analyze.py` | Page quality analysis & protection | `httpx` |
 | `chapter.py` | Chapter boundary detection | `httpx` |
 | `call_llm.py` | Batch translation via DeepSeek/OpenAI API | `httpx` |
+| `ocr_mistral.py` | Rescan pages with Mistral OCR API | `httpx` |
 | `koharu_api.py` | Shared Koharu HTTP API client | `httpx` |
 
 ## Translation modes

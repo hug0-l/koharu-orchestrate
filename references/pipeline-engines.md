@@ -13,7 +13,8 @@
 | `yuzumarker-font-detection` | YuzuMarker Font | `TextBoxes` | `FontPredictions` | `font_detector` | Detect |
 | `manga-ocr` | Manga OCR | `TextBoxes` | `OcrText` | — | OCR |
 | `mit48px-ocr` | MIT 48px OCR | `TextBoxes` | `OcrText` | — | OCR |
-| `paddle-ocr-vl-1.6` | PaddleOCR-VL | `TextBoxes` | `OcrText` | `ocr` | OCR |
+| `paddle-ocr-vl-1.5` | PaddleOCR-VL 1.5 | `TextBoxes` | `OcrText` | `ocr` | OCR |
+| `paddle-ocr-vl-1.6` | PaddleOCR-VL 1.6 | `TextBoxes` | `OcrText` | — | OCR |
 | `llm` | LLM | `OcrText` | `Translations` | `translator` | Translate |
 | `lama-manga` | Lama Manga | `SegmentMask`, `BubbleMask` | `Inpainted` | `inpainter` | Inpaint |
 | `aot-inpainting` | AOT Inpainting | `SegmentMask`, `BubbleMask` | `Inpainted` | — | Inpaint |
@@ -45,11 +46,11 @@ Translations    BubbleMask
 
 | 槽位 | 預設引擎 | 用途 |
 |------|---------|------|
-| `detector` | `pp-doclayout-v3` | 文字區塊偵測 |
+| `detector` | `comic-text-bubble-detector` | 文字區塊 + 泡泡偵測 |
 | `font_detector` | `yuzumarker-font-detection` | 字體/顏色分析 |
 | `segmenter` | `comic-text-detector-seg` | 除字遮罩 |
 | `bubble_segmenter` | `speech-bubble-segmentation` | 泡泡區域遮罩 |
-| `ocr` | `paddle-ocr-vl-1.6` | 文字辨識 |
+| `ocr` | `paddle-ocr-vl-1.5` | 文字辨識 |
 | `translator` | `llm` | 翻譯（技能中由 Agent 取代） |
 | `inpainter` | `lama-manga` | 除字 |
 | `renderer` | `koharu-renderer` | 合成 |
@@ -59,14 +60,14 @@ Translations    BubbleMask
 ## 典型管線順序（DAG）
 
 ```
-1. pp-doclayout-v3   (detect text blocks)
-   speech-bubble-segmentation  (detect bubbles)
+1. comic-text-bubble-detector  (detect text blocks + bubbles)
+   speech-bubble-segmentation  (detect bubble masks)
    [可並行，無相依]
 
 2. comic-text-detector-seg  (generate segment mask, needs TextBoxes)
    yuzumarker-font-detection (font analysis, needs TextBoxes)
 
-3. paddle-ocr-vl-1.6  (OCR text, needs TextBoxes)
+3. paddle-ocr-vl-1.5  (OCR text, needs TextBoxes)
 
 4. [Agent 翻譯 — 非 engine 步驟]
 
