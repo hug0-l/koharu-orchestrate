@@ -44,7 +44,12 @@ def log(msg: str) -> None:
     print(f"[run_volume] {msg}", flush=True)
 
 
-def wait_server(api: KoharuAPI, timeout: float = 60.0) -> bool:
+def api_for(port: int) -> KoharuAPI:
+    return KoharuAPI(f"http://localhost:{port}")
+
+
+def wait_server(port: int, timeout: float = 60.0) -> bool:
+    api = api_for(port)
     start = time.monotonic()
     while time.monotonic() - start < timeout:
         try:
@@ -55,16 +60,26 @@ def wait_server(api: KoharuAPI, timeout: float = 60.0) -> bool:
     return False
 
 
-def start_server(use_cpu: bool = False) -> bool:
-    subprocess.run(["pkill", "-f", "koharu.*headless"], capture_output=True)
+def start_server(port: int = 4000, use_cpu: bool = False) -> bool:
+    """Start a Koharu instance on a specific port. Only kills the instance
+    already bound to THIS port, so multiple instances can run in parallel."""
+    # kill only processes bound to this port (parallel-safe)
+    subprocess.run(
+        ["pkill", "-f", f"koharu.*--headless.*--port.{port}\\b|koharu.*--port.{port}"],
+        capture_output=True,
+    )
     time.sleep(2)
-    cmd = [KOHARU_BIN, "--headless", "--port", "4000"]
+    # also match the plain form (no explicit port -> default 4000)
+    if port == 4000:
+        subprocess.run(["pkill", "-f", "koharu --headless"], capture_output=True)
+        time.sleep(1)
+    cmd = [KOHARU_BIN, "--headless", "--port", str(port)]
     if use_cpu:
         cmd.append("--cpu")
-    logf = open("/tmp/koharu-cpu.log" if use_cpu else "/tmp/koharu.log", "w")
+    logf = open(f"/tmp/koharu-{port}.log" if use_cpu else f"/tmp/koharu-{port}.log", "w")
     subprocess.Popen(cmd, stdout=logf, stderr=subprocess.STDOUT)
     time.sleep(7)
-    return wait_server(KoharuAPI())
+    return wait_server(port)
 
 
 def start_pipeline(api: KoharuAPI, steps: list[str], **kw) -> str:
@@ -77,7 +92,8 @@ def start_pipeline(api: KoharuAPI, steps: list[str], **kw) -> str:
 
 
 def wait_with_failover(
-    api: KoharuAPI, op_id: str, proj_id: str, pages_total: int, timeout: float = 2800
+    api: KoharuAPI, op_id: str, proj_id: str, pages_total: int, port: int = 4000,
+    timeout: float = 2800,
 ) -> tuple[str, int]:
     """Poll an operation; on connection-loss (GPU OOM) auto-restart on CPU.
 
@@ -102,9 +118,9 @@ def wait_with_failover(
         except Exception:
             # connection lost -> GPU OOM. restart on CPU, reopen, resume.
             log("connection lost (GPU OOM) -> restarting on CPU and resuming")
-            if not start_server(use_cpu=True):
+            if not start_server(port=port, use_cpu=True):
                 return "restart_failed", last_done
-            api = KoharuAPI()
+            api = api_for(port)
             for _ in range(8):
                 try:
                     api.open_project(proj_id)
@@ -161,13 +177,14 @@ def prepare_pages(api: KoharuAPI, entry: dict[str, Any], work_dir: Path) -> tupl
     return images, kind
 
 
-def run(entry_id: str, queue_path: str, skip_translate: bool, inpaint_only: bool) -> int:
+def run(entry_id: str, queue_path: str, skip_translate: bool, inpaint_only: bool,
+        port: int = 4000, dump_only: bool = False) -> int:
     q = json.load(open(queue_path))
     entry = next((e for e in q if e["id"] == entry_id), None)
     if not entry:
         log(f"queue entry not found: {entry_id}")
         return 1
-    if entry.get("status") == "done" and not inpaint_only:
+    if entry.get("status") == "done" and not inpaint_only and not dump_only:
         log("already done; use --inpaint-only to resume")
         return 1
 
@@ -182,10 +199,10 @@ def run(entry_id: str, queue_path: str, skip_translate: bool, inpaint_only: bool
     proj_id = entry.get("project_id") or entry_id.replace("_", "-")
 
     # ---- server + project ----
-    if not start_server(use_cpu=inpaint_only):
+    if not start_server(port=port, use_cpu=inpaint_only):
         log("server failed to start")
         return 1
-    api = KoharuAPI()
+    api = api_for(port)
 
     if inpaint_only:
         log("resume mode: reopening project")
@@ -220,7 +237,7 @@ def run(entry_id: str, queue_path: str, skip_translate: bool, inpaint_only: bool
 
         # ---- dump ----
         import call_llm as C
-        items = C.read_scene_text("http://localhost:4000", reading_order="rtl")
+        items = C.read_scene_text(f"http://localhost:{port}", reading_order="rtl")
         dump_path = work_dir / f"all_text_{entry_id}.json"
         json.dump(items, open(dump_path, "w"), ensure_ascii=False, indent=1)
         log(f"dumped {len(items)} items -> {dump_path.name}")
@@ -236,6 +253,15 @@ def run(entry_id: str, queue_path: str, skip_translate: bool, inpaint_only: bool
                 anchors.setdefault(i + 1, {})[str(p)] = items[p - 1]["text"].replace("\n", "⏎")[:50]
         log(f"slices: {nslices} (200/slice)  anchors: {json.dumps(anchors, ensure_ascii=False)[:200]}")
         json.dump(anchors, open(work_dir / f"slices_{entry_id}.json", "w"), ensure_ascii=False, indent=1)
+
+        if dump_only:
+            log("DUMP-ONLY: source prepared. dispatch subagents per slice_*.json, then re-run without --dump-only")
+            entry["status"] = "dumped"
+            import datetime
+            entry["dumped_at"] = datetime.datetime.now().isoformat(timespec="seconds")
+            entry["project_id"] = proj_id
+            json.dump(q, open(queue_path, "w"), ensure_ascii=False, indent=2)
+            return 0
 
         # ---- validate existing slice files (if --skip-translate re-run) ----
         import validate_batch
@@ -302,15 +328,15 @@ def run(entry_id: str, queue_path: str, skip_translate: bool, inpaint_only: bool
                             for n in page.get("nodes", {}).values())]
         first = to_do[:GPU_PAGES_BEFORE_CPU]
         opid = start_pipeline(api, ["lama-manga"], pages=first)
-        status, done = wait_with_failover(api, opid, proj_id, pages_total)
+        status, done = wait_with_failover(api, opid, proj_id, pages_total, port=port)
         log(f"inpaint chunk1: {status} ({done}/{pages_total})")
         scene = api.get_scene()
         missing = _count_missing_inpaint(scene)
         if missing:
             log("switching to CPU for remaining pages")
-            if not start_server(use_cpu=True):
+            if not start_server(port=port, use_cpu=True):
                 return 2
-            api = KoharuAPI()
+            api = api_for(port)
             for _ in range(8):
                 try:
                     api.open_project(proj_id)
@@ -392,8 +418,12 @@ def main() -> int:
     ap.add_argument("--id", required=True)
     ap.add_argument("--skip-translate", action="store_true", help="merge existing slices / re-render")
     ap.add_argument("--inpaint-only", action="store_true", help="resume inpaint on an existing project")
+    ap.add_argument("--port", type=int, default=4000, help="Koharu server port (default 4000)")
+    ap.add_argument("--dump-only", action="store_true",
+                    help="only import/detect/OCR/dump+slices, then exit (for parallel prep)")
     args = ap.parse_args()
-    return run(args.id, args.queue, args.skip_translate, args.inpaint_only)
+    return run(args.id, args.queue, args.skip_translate, args.inpaint_only,
+               port=args.port, dump_only=args.dump_only)
 
 
 if __name__ == "__main__":
