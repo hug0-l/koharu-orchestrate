@@ -845,6 +845,12 @@ curl -s -X POST $KOHARU_URL/api/v1/projects/current/export \
 
 **run_volume 整合**：queue 條目加 `"protect": "work/protect.json"` 或傳 `--protect protect.json`，OCR 完成後、inpaint 前自動套用。`protect.json` 格式：`{"nodes":["pid:nid"],"pages":["pid"],"match":"regex"}`。
 
+**by-node vs by-page 差異（實測）**：
+- `--pages`（整頁保護）：該頁所有文字節點都保留——適合封面、目次、章節標題頁（標題美術）。
+- `--nodes pid:nid`（單一節點）：只保護指定節點，**同頁其他對白照常翻譯**——適合「對話頁裡混著一個大音效字」。
+- 用 `--match` 依 OCR 文字 regex 批量選節點（例：`'^[ァ-ヶー]{1,8}$'` 純片假名音效）。
+- 驗證（by-node 實測）：SFX 節點區域暗像素比 source=inpainted=rendered=0.0201 分毫不差，同頁對白全部有翻譯。
+
 **實作原理**：
 1. 抓每頁 `segment` mask blob（L 影像，白=除字區域），把受保護文字節點的 bbox 塗黑，`PUT /api/v1/pages/{id}/masks/segment` 重新上傳 → inpaint 會略過。
 2. 受保護節點 `patch {visible:false}` + 清空 translation → renderer 不會畫翻譯覆蓋。
