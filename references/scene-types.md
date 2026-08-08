@@ -54,8 +54,10 @@
 
 ### removePage
 
+> ⚠ 實際欄位是 snake_case：`prev_page` / `prev_index`（舊版文件曾誤寫為 `prevPage`/`prevIndex`）。
+
 ```json
-{ "removePage": { "id": "page-uuid", "prevPage": {}, "prevIndex": 0 } }
+{ "removePage": { "id": "page-uuid", "prev_page": {}, "prev_index": 0 } }
 ```
 
 ### updatePage

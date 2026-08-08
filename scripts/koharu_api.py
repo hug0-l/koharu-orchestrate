@@ -8,6 +8,17 @@ from typing import Any
 
 import httpx
 
+MIME_BY_EXT = {
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".webp": "image/webp",
+    ".bmp": "image/bmp",
+    ".gif": "image/gif",
+    ".tiff": "image/tiff",
+    ".avif": "image/avif",
+}
+
 
 class KoharuAPI:
     """Thin client for Koharu's HTTP API."""
@@ -79,7 +90,8 @@ class KoharuAPI:
         """Import images as pages. Returns list of page IDs."""
         files = []
         for p in image_paths:
-            files.append(("images", (p.name, p.read_bytes(), f"image/{p.suffix[1:]}")))
+            mime = MIME_BY_EXT.get(p.suffix.lower(), "application/octet-stream")
+            files.append(("images", (p.name, p.read_bytes(), mime)))
         params: dict[str, str] = {}
         if replace:
             params["replace"] = "true"
@@ -151,31 +163,45 @@ class KoharuAPI:
 
     # ---- Events (SSE) ----
 
-    def events_stream(self) -> list[dict[str, Any]]:
-        """Fetch buffered events from the SSE endpoint. Returns list of event dicts."""
-        r = self.get("/api/v1/events")
-        events = []
-        for line in r.text.split("\n"):
-            if line.startswith("data: "):
-                try:
-                    events.append(json.loads(line[6:]))
-                except json.JSONDecodeError:
-                    continue
+    def events_stream(self, max_events: int | None = None, read_timeout: float = 30.0) -> list[dict[str, Any]]:
+        """Read events from the SSE endpoint as a streaming response.
+
+        `/api/v1/events` is a long-lived stream; reading it as a plain GET would
+        hang until the server closes the connection. This drains lines incrementally
+        and stops after `read_timeout` seconds (or once `max_events` is collected).
+        Returns a list of parsed event dicts (non-`data:` lines ignored).
+        """
+        events: list[dict[str, Any]] = []
+        deadline = time.monotonic() + read_timeout
+        with self.client.stream("GET", "/api/v1/events", timeout=read_timeout) as r:
+            r.raise_for_status()
+            for line in r.iter_lines():
+                if line.startswith("data: "):
+                    try:
+                        events.append(json.loads(line[6:]))
+                    except json.JSONDecodeError:
+                        continue
+                    if max_events and len(events) >= max_events:
+                        break
+                if time.monotonic() > deadline:
+                    break
         return events
 
     def wait_for_event(
-        self, event_type: str, timeout: float = 120.0, poll_interval: float = 2.0
+        self, event_type: str, timeout: float = 120.0, interval: float = 2.0
     ) -> dict[str, Any] | None:
-        """Poll the SSE endpoint until a specific event type is seen."""
+        """Wait for a specific event type by opening short streaming windows.
+
+        Preferred over this helper for pipeline monitoring: poll
+        ``GET /api/v1/operations`` via :meth:`wait_for_operation` instead.
+        """
         start = time.monotonic()
         while True:
-            events = self.events_stream()
-            for ev in events:
+            for ev in self.events_stream(read_timeout=interval):
                 if ev.get("type") == event_type:
                     return ev
             if time.monotonic() - start > timeout:
                 return None
-            time.sleep(poll_interval)
 
     # ---- LLM (extended) ----
 

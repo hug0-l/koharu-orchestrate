@@ -47,10 +47,26 @@ def download_blob(server_url: str, blob_hash: str) -> bytes:
     return r.content
 
 
+def guess_mime(data: bytes) -> str:
+    """Detect MIME type from magic bytes (not trusting filenames/extensions)."""
+    if data.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png"
+    if data.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg"
+    if data.startswith(b"GIF87a") or data.startswith(b"GIF89a"):
+        return "image/gif"
+    if data.startswith(b"RIFF") and data[8:12] == b"WEBP":
+        return "image/webp"
+    if data.startswith(b"BM"):
+        return "image/bmp"
+    return "image/jpeg"  # fallback; Mistral tolerates a common default
+
+
 def mistral_ocr(api_key: str, image_bytes: bytes, model: str = "mistral-ocr-latest") -> dict[str, Any]:
     """Send image to Mistral OCR API. Returns full response."""
     b64 = base64.b64encode(image_bytes).decode()
-    data_uri = f"data:image/jpeg;base64,{b64}"
+    mime = guess_mime(image_bytes)
+    data_uri = f"data:{mime};base64,{b64}"
 
     payload = {
         "model": model,

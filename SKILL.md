@@ -79,7 +79,7 @@ koharu.open_project { path: "/path/to/proj", createName: "My Manga" }
 
 ---
 
-## 完整翻譯流程（15 步驟）
+## 完整翻譯流程（16 步驟）
 
 ### 步驟 1：啟動 Koharu Headless Server
 
@@ -317,9 +317,11 @@ curl -s $KOHARU_URL/api/v1/scene.json > scene.json
 - `text` (OCR 辨識結果)
 - `confidence` (可選，過濾低信度辨識)
 
+> **受保護頁面**：若步驟 7 產生了 `protected_pages.json`，先讀取 `protected_pages[].page_id`，跳過這些頁面不翻譯。
+
 ##### 9b. 格式化為標籤區塊
 
-對每一頁，按閱讀順序（從 scene.json 中 node 的排列順序）將文字格式化為：
+對每一頁，**依視覺閱讀順序**（不是 scene.json 的 dict 排列順序）將文字格式化：
 
 ```
 [1] source text from first bubble
@@ -327,6 +329,10 @@ curl -s $KOHARU_URL/api/v1/scene.json > scene.json
 [3] source text from third bubble
 ...
 ```
+
+排序規則（日漫 RTL 為預設）：
+- 用 node 的 `transform` 取中心點 `(cx, cy)`
+- 先依 `cy` 上到下，再依 `cx`：RTL 從右到左（`cx` 遞減）、LTR 從左到右（`cx` 遞增）
 
 記錄每個 `[N]` 對應的 `(page_id, node_id)`。
 
@@ -341,6 +347,7 @@ curl -s $KOHARU_URL/api/v1/scene.json > scene.json
    - 英文值 → 保留原文
    - 非英文值 → 使用該譯名
 5. **專有名詞**：依術語表 `terms[].dst` 決定是否翻譯
+6. **翻譯記憶**（用語一致性）：若已有 `tm.json`，相同原文的台詞（口癖、咒語、固定稱呼）必須沿用舊譯文，不得改寫。選項 B 會自動強制覆寫；選項 A 需 agent 自行查對 `tm.json`。
 
 ##### 9d. 寫回翻譯
 
@@ -429,16 +436,28 @@ call_llm.py translate \
   --lang "Traditional Chinese" \
   --glossary $WORK/glossary.locked.json \
   --rules $SKILL_DIR/references/translation_rules.md \
+  --chapters $WORK/chapters.json \
+  --protected $WORK/protected_pages.json \
+  --tm $WORK/tm.json \
+  --reading-order rtl \
   --batch-size 40 \
   --output $WORK/translations.json
 ```
 
 **流程：**
 1. `call_llm.py` 從 Koharu 讀取所有 OCR text
-2. 批次格式化為 `[N]` tagged blocks
-3. 每批 40 段送 DeepSeek API（自動附帶術語表 + 翻譯規則）
-4. 解析 API 回應
-5. 輸出 `translations.json`（`page_id, node_id, translation`）
+2. 依 `--reading-order` 排序（RTL 從右到左、LTR 從左到右），並跳過 `--protected` 標記的頁面
+3. 批次格式化為 `[N]` tagged blocks
+4. 每批 40 段送 DeepSeek API（自動附帶術語表 + 翻譯規則 + `--chapters` 章節摘要）
+5. 解析 API 回應
+6. 套用翻譯記憶（`--tm`）：相同原文強制沿用舊譯文；新配對寫回 `tm.json`
+7. 輸出 `translations.json`（`page_id, node_id, translation`）
+
+**翻譯記憶（用語一致性）：**
+`tm.json` 是 `{ "原文": "譯文" }` 的對應表，跨批次、跨章節、跨次翻譯都保留：
+- 同一句台詞重複出現 → 一律使用首次翻譯的措辭，保證全書一致
+- 若想更換某個用語，編輯 `tm.json` 後重跑即可（先刪掉要改的條目）
+- 沒有 `--tm` 時此機制自動停用
 
 **寫回 Koharu：**
 
@@ -476,7 +495,30 @@ print(f'Written {len(ops)} translations')
 - 發現系統性問題 → 修正 glossary 或 rules → 重新翻譯
 - 發現個別問題 → `koharu.apply` 手動修正
 
-### 步驟 11：除字（Inpaint）
+### 步驟 11：驗證術語與用語一致性（建議）
+
+翻譯寫回後，用 `verify.py` 稽核整本場景，找出術語表違規與「同句原文譯法不一」：
+
+```bash
+# 術語合規 + 重複句一致性報告
+<PFX> -m verify check \
+  --server $KOHARU_URL \
+  --glossary $WORK/glossary.locked.json
+
+# 機器可讀輸出（供 agent 批量修正）
+<PFX> -m verify check \
+  --server $KOHARU_URL \
+  --glossary $WORK/glossary.locked.json --json > verify_report.json
+```
+
+檢查三類：
+1. **術語違規**：人名未依 `render` 保留/翻譯、術語未用 `dst`、`keep_source` 被改譯
+2. **重複句漂移**：相同原文在不同頁被譯成不同措辭 → 建議以最常見譯文為 canonical，`koharu.apply` 覆寫其他頁
+3. **未翻譯**：有 OCR 原文但無譯文的 node
+
+修正後跳回步驟 9d（或直接改對應 node）重跑渲染。
+
+### 步驟 12：除字（Inpaint）
 
 ```json
 koharu.start_pipeline {
@@ -486,7 +528,7 @@ koharu.start_pipeline {
 
 用遮罩去除原文文字。若 VRAM 夠可換 `flux2-klein`（品質更好但更慢）或 `aot-inpainting`。
 
-### 步驟 12：合成（Render）
+### 步驟 13：合成（Render）
 
 ```json
 koharu.start_pipeline {
@@ -508,7 +550,7 @@ koharu.start_pipeline {
   ```
   若不指定 `defaultFont`，Koharu 會自動 fallback 到系統字型。
 
-### 步驟 13：最終審查
+### 步驟 14：最終審查
 
 ```bash
 curl -s $KOHARU_URL/api/v1/scene.json | python3 -c "
@@ -529,7 +571,7 @@ for pid, page in pages.items():
 
 修正不滿意的翻譯或位置後回到步驟 9d 重跑。
 
-### 步驟 14：匯出
+### 步驟 15：匯出
 
 ```bash
 curl -s -X POST $KOHARU_URL/api/v1/projects/current/export \
@@ -544,7 +586,7 @@ curl -s -X POST $KOHARU_URL/api/v1/projects/current/export \
 - `khr`：Koharu 專案存檔
 - `inpainted`：僅除字後的圖片
 
-### 步驟 15：關閉專案
+### 步驟 16：關閉專案
 
 ```json
 koharu.close_project
@@ -601,7 +643,21 @@ koharu.close_project
 
 ### 翻譯後：驗證術語合規
 
-Agent 在步驟 9 翻譯後可以用 `references/translation_rules.md` 的規則自行 verify（如人名保留檢查、術語一致性檢查）。
+Agent 在步驟 9 翻譯後應執行 **步驟 11** 的 `verify.py` 稽核：
+
+```bash
+<PFX> -m verify check \
+  --server $KOHARU_URL \
+  --glossary $WORK/glossary.locked.json \
+  --json > verify_report.json
+```
+
+`verify.py` 依 `references/translation_rules.md` + `references/glossary_format.md` 自動檢查：
+- 人名是否依 `characters[].render` 保留/翻譯（含 alias 出現的場合）
+- 術語是否使用 `terms[].dst`、`keep_source` 是否被誤譯
+- 相同原文是否在書內各處譯法一致（用語一致性）
+
+任何違規都應修正後才進行 Inpaint/Render。
 
 ---
 
@@ -642,12 +698,24 @@ $PFX -m analyze --server $KOHARU_URL --apply-protection
 $PFX -m chapter detect --server $KOHARU_URL
 $PFX -m chapter detect --server $KOHARU_URL --json > chapters.json
 
-# DeepSeek 批次翻譯
+# DeepSeek 批次翻譯（含章節摘要、受保護頁、翻譯記憶、閱讀順序）
 $PFX -m call_llm translate \
   --server $KOHARU_URL --api-key $DEEPSEEK_API_KEY \
   --lang "Traditional Chinese" \
   --glossary $WORK/glossary.locked.json \
+  --chapters $WORK/chapters.json \
+  --protected $WORK/protected_pages.json \
+  --tm $WORK/tm.json \
+  --reading-order rtl \
   --output $WORK/translations.json
+
+# 驗證術語合規 + 用語一致性
+$PFX -m verify check \
+  --server $KOHARU_URL \
+  --glossary $WORK/glossary.locked.json
+$PFX -m verify check \
+  --server $KOHARU_URL \
+  --glossary $WORK/glossary.locked.json --json > verify_report.json
 
 # 檢視場景
 curl -s $KOHARU_URL/api/v1/scene.json
@@ -671,6 +739,51 @@ curl -s -X POST $KOHARU_URL/api/v1/projects/current/export \
 
 ---
 
+## 實戰筆記（整卷重做心得，2026-08 上伊那ぼたん 08）
+
+### 匯入／清除
+- `import_pages --replace` **不可靠**：實測舊頁不會被清掉，會疊出 2 倍頁數。重做時先用 clear-all 腳本清除（`removePage` batch，**欄位是 `prev_page`/`prev_index`（snake_case）**，不是文件舊寫的 `prevPage`），再重新匯入。
+- `scene.json` 的 node kind 是小寫：`image`/`text`/`mask`；image `role` 也是小寫 `source`/`inpainted`/`rendered`。
+
+### OCR
+- 內建預設 `manga-ocr` 品質差（上一版翻譯爛的根源）。先 `PATCH /api/v1/config` 換 `paddle-ocr-vl-1.6`。低信度（<0.4）節點幾乎都是 SFX/背景字，翻譯時跳過即可。
+
+### Render 溢出（文字超出泡泡）
+- 成因：節點 `lockLayoutBox=false` 且 `fontPrediction.fontSizePx` 很大（如 129px）時，renderer 不做縮放直接溢出。
+- 修法：render 前對所有文字節點 `patch {data:{text:{lockLayoutBox:true}}}` → 文字自動縮放進框。
+- **無法看圖時的驗證法**：
+  1. 溢出：render 後比對節點 `spriteTransform` 寬高 vs `transform`，ratio>1.2 即溢出；
+  2. 文字可見性：算泡泡框內暗像素比例（<100 亮度）vs 除字底圖，rendered 應遠高於 inpainted。
+
+### 字型
+- **務必用 `source: system` 且 `cached: true` 的字型**。Google Font（`cached: false`）未下載時 renderer 整句不畫（log：`no font found`），成品文字會消失。
+- 繁中圓體：`Yuanti TC`；繁中黑體：`.PingFang TC`；日式丸ゴ：`Hiragino Maru Gothic ProN`；手寫：`Hannotate TC`。用 `GET /api/v1/fonts` 檢查 `cached`，Google Font 可先 `POST /api/v1/google-fonts/{family}/fetch` 下載。
+
+### Inpaint 失敗
+- 遮罩大的頁面在 Metal GPU 會 `Failed to create metal resource: Buffer`（OOM），嚴重時整台 server 被殺掉（無 log）。
+- 解法：只對失敗頁重試；仍失敗就重啟 Koharu 加 `--cpu`，用 CPU 處理那幾頁。專案進度存 `scene.bin`，重啟後 reopen 續跑。
+
+### 翻譯與一致性
+- 術語表用官方譯名：`webfetch zh.wikipedia.org`（`?variant=zh-tw`）。
+- `verify.py` 人名檢查會把「台詞中用簡稱（牡丹/伊吹）」誤報——短名用法正確，只需修真正的不一致（如 先輩→學姊 統一）。
+- 手寫逐章翻譯陣列容易錯位，改用 index-keyed dict 或直接 node_id 對應，並用長度斷言校驗。
+
+### Subagent 平行翻譯（2026-08 大量卷心法）
+- **切片調度**：每卷切成 300 條/片（`trans/vXX_slice_NN.json`），一次平行派 4-6 個 subagent，每個負責一片。
+- **派發後必跑 `validate_batch.py`** 稽核：
+  ```bash
+  <PFX> -m validate_batch \
+    --all-text $WORK/work/all_text_vXX.json \
+    --trans $WORK/trans/ \
+    --expected $(python3 -c "import json;print(len(json.load(open('$WORK/work/all_text_vXX.json'))))")
+  ```
+  - **0-based 錯位偵測**：subagent 常把「元素位置 1-based」誤寫成陣列 index。`validate_batch` 用「原文↔譯文共享字元加權分數」比較 +0/+1 兩種偏移，`off=+1` 即代表整片錯位。用 `--fix` 自動寫 `*_fixed.json`。
+  - **覆蓋率檢查**：`--expected N` 報缺漏條數；空白值、越界 key、重複 key 一併列出。
+- **空手而歸處理**：subagent 整卷翻譯常回傳空（沒寫檔）。切片後只看哪些 slice 檔存在，缺的只補派，不必整卷重來。
+- **prompt 契約**：明寫「用 Write 工具建立檔案才算完成，回覆不被評分」；內嵌切片首/中/尾元素的原文做 1-based 錨點；要求輸出前自我檢查 key 範圍與條數。
+
+---
+
 ## 常見問題
 
 **Q: Koharu 啟動報錯？**
@@ -686,7 +799,13 @@ A: `GET /api/v1/operations` 看 `error` 欄位。通常原因：VRAM 不足（�
 A: `paddle-ocr-vl-1.6` 最強但最慢。可用 `manga-ocr`（CRNN 模型，輕量但支援日文為主）。可在 `PATCH /api/v1/config` 切換 `pipeline.ocr`。
 
 **Q: 如何只重翻某幾頁的翻譯？**
-A: 重新 `koharu.apply UpdateNode` 覆寫 `translation`，然後只跑步驟 11（Render）即可，不必重新 OCR。
+A: 重新 `koharu.apply UpdateNode` 覆寫 `translation`，然後只跑步驟 13（Render）即可，不必重新 OCR。
+
+**Q: 同一個詞／同一句台詞在不同頁譯法不一致？**
+A: 這是 `verify.py`（步驟 11）的 `repeat` 檢查會抓的問題。修法：
+1. 編輯 `tm.json`，把該詞/句改成你想要統一的譯文
+2. 用 `call_llm.py --tm tm.json` 重跑，相同原文會強制套用新譯
+3. 或直接用 `koharu.apply UpdateNode` 手動覆寫那幾頁的 `translation`，再重跑 Render
 
 ---
 

@@ -33,28 +33,56 @@ SUPPORTED_IMG_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif"}
 
 def extract_from_epub(epub_path: Path, output_dir: Path) -> list[Path]:
     """Extract all images from an EPUB. Returns list of saved image paths."""
-    book = epub.read_epub(str(epub_path))
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    saved = []
-    page_num = 1
+    # Try ebooklib first (respects OPF manifest order).
+    try:
+        from ebooklib import epub as _epub
 
-    for item in book.get_items():
-        if item.get_type() == 59:  # ITEM_IMAGE
+        book = _epub.read_epub(str(epub_path))
+        items = [it for it in book.get_items() if it.get_type() == 59]  # ITEM_IMAGE
+    except Exception:
+        items = []
+
+    if items:
+        saved = []
+        for page_num, item in enumerate(items, 1):
             ext = _guess_ext(item.get_name())
             filename = f"page_{page_num:04d}{ext}"
             out_path = output_dir / filename
-
-            # Basic image validation
             try:
                 img = Image.open(item.get_content())
                 img.verify()
             except Exception:
                 continue
-
             out_path.write_bytes(item.get_content())
             saved.append(out_path)
-            page_num += 1
+        if saved:
+            return saved
+
+    # Fallback: walk the raw zip archive and collect image files in path order.
+    # Handles EPUBs where ebooklib reports no ITEM_IMAGE (some scan/卷 EPUBs).
+    import zipfile
+
+    saved = []
+    try:
+        with zipfile.ZipFile(epub_path) as zf:
+            names = [n for n in zf.namelist() if _guess_ext(n) in SUPPORTED_IMG_EXTS]
+            # sort by path segments so dirs like OEBPS/image stay in filename order
+            names.sort(key=lambda n: (n.split("/")[-1].zfill(8), n))
+            for page_num, name in enumerate(names, 1):
+                ext = _guess_ext(name)
+                filename = f"page_{page_num:04d}{ext}"
+                out_path = output_dir / filename
+                try:
+                    img = Image.open(zf.open(name))
+                    img.verify()
+                except Exception:
+                    continue
+                out_path.write_bytes(zf.read(name))
+                saved.append(out_path)
+    except Exception:
+        pass
 
     return saved
 

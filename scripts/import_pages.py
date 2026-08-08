@@ -11,9 +11,9 @@ import re
 import sys
 from pathlib import Path
 
-from koharu_api import KoharuAPI
+from koharu_api import MIME_BY_EXT, KoharuAPI
 
-SUPPORTED_IMG_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif", ".tiff", ".avif"}
+SUPPORTED_IMG_EXTS = set(MIME_BY_EXT)
 
 
 def _natural_sort_key(path: Path) -> list:

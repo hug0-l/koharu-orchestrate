@@ -170,29 +170,18 @@ def cmd_fetch(args: argparse.Namespace) -> None:
         f"search={quote(series)}&variant=zh-tw"
     )
 
+    # Keep the skeleton strictly to the glossary schema (characters/terms/
+    # non_translate) — private keys like _search_urls would pollute the locked
+    # glossary that call_llm.py / verify.py consume. Agent instructions are
+    # printed to stderr below instead.
     glossary: dict[str, Any] = {
         "characters": [],
         "terms": [{
             "src": series,
             "dst": series,
             "category": "series",
-            "_search_urls": {
-                "wikipedia_zh": wiki_search_url,
-                "wikipedia_ja": f"https://ja.wikipedia.org/wiki/{quote(series)}",
-                "bangumi": f"https://bgm.tv/subject_search/{quote(series)}?cat=1",
-            }
         }],
         "non_translate": [],
-        "_series_raw": series,
-        "_agent_instructions": (
-            f"1. Use webfetch to search Wikipedia: {wiki_search_url}\n"
-            f"2. Find the official Traditional Chinese title and character names\n"
-            f"3. Also check Bangumi or the publisher's site for official translations\n"
-            f"4. Fill in the 'characters' array with {{canonical, render, aliases}}\n"
-            f"5. Set the series term's 'dst' to the official Chinese title\n"
-            f"6. Review and lock the glossary before translating"
-        ),
-        "_note": "Auto-generated skeleton — agent must webfetch sources and fill in",
     }
 
     out = Path(args.out)
@@ -203,9 +192,10 @@ def cmd_fetch(args: argparse.Namespace) -> None:
     print(f"Written: {out.resolve()}", file=sys.stderr)
     print(f"\nAgent workflow:", file=sys.stderr)
     print(f"  1. webfetch \"{wiki_search_url}\"", file=sys.stderr)
-    print(f"  2. Extract official Chinese title + character names", file=sys.stderr)
-    print(f"  3. Fill glossary characters and terms", file=sys.stderr)
-    print(f"  4. Lock glossary before translating", file=sys.stderr)
+    print(f"  2. Also check https://bgm.tv/subject_search/{quote(series)}?cat=1", file=sys.stderr)
+    print(f"  3. Extract official Chinese title + character names", file=sys.stderr)
+    print(f"  4. Fill glossary characters and terms", file=sys.stderr)
+    print(f"  5. Lock glossary before translating", file=sys.stderr)
 
 
 def _looks_like_name(src: str, dst: str) -> bool:

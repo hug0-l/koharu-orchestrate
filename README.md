@@ -35,7 +35,7 @@ export KOHARU_URL="http://localhost:4000"
 export WORK="$HOME/my-manga"
 ```
 
-## Full workflow (13 steps)
+## Full workflow (16 steps)
 
 | # | Step | Executor | Interface |
 |---|------|----------|-----------|
@@ -45,15 +45,16 @@ export WORK="$HOME/my-manga"
 | 4 | Detect text + bubbles | `koharu.start_pipeline` | MCP → polling |
 | 5 | Agent review detections | `GET /scene.json` + `koharu.apply` | HTTP + MCP |
 | 6 | OCR + segmentation + font | `koharu.start_pipeline` | MCP → polling |
-| 6.5 | Page quality analysis | `analyze.py` | Python |
-| 6.6 | Chapter detection | `chapter.py` | Python |
-| 7 | **Translate** (agent LLM or DeepSeek API) | — | Agent + `koharu.apply` |
-| 8 | Review translations | `GET /scene.json` | HTTP |
-| 9 | Inpaint | `koharu.start_pipeline` | MCP |
-| 10 | Render | `koharu.start_pipeline` | MCP |
-| 11 | Final review | `GET /scene.json` | HTTP |
-| 12 | Export | `POST /export` | HTTP |
-| 13 | Close project | `koharu.close_project` | MCP |
+| 7 | Page quality analysis | `analyze.py` | Python |
+| 8 | Chapter detection + summaries | `chapter.py` | Python |
+| 9 | **Translate** (agent LLM or DeepSeek API) | — | Agent + `koharu.apply` |
+| 10 | Review translations | `GET /scene.json` | HTTP |
+| 11 | Verify glossary + wording consistency | `verify.py` | Python |
+| 12 | Inpaint | `koharu.start_pipeline` | MCP |
+| 13 | Render | `koharu.start_pipeline` | MCP |
+| 14 | Final review | `GET /scene.json` | HTTP |
+| 15 | Export | `POST /export` | HTTP |
+| 16 | Close project | `koharu.close_project` | MCP |
 
 ## Scripts
 
@@ -66,6 +67,7 @@ export WORK="$HOME/my-manga"
 | `chapter.py` | Chapter boundary detection | `httpx` |
 | `call_llm.py` | Batch translation via DeepSeek/OpenAI API | `httpx` |
 | `ocr_mistral.py` | Rescan pages with Mistral OCR API | `httpx` |
+| `verify.py` | Glossary compliance + wording consistency check | `httpx` |
 | `koharu_api.py` | Shared Koharu HTTP API client | `httpx` |
 
 ## Translation modes
@@ -80,6 +82,20 @@ export WORK="$HOME/my-manga"
 1. **Wikipedia fetch** — auto-detect series, search zh.wikipedia.org for official Taiwanese translations
 2. **AiNiee import** — import from existing AiNiee `config.json`
 3. **Template** — blank skeleton for manual entry
+
+## Wording consistency
+
+Three layers keep character names, terms and repeated lines consistent across
+the whole book (and across separate translation runs):
+
+1. **Glossary** (`glossary.locked.json`) — canonical mapping for names/terms,
+   enforced by `verify.py check`.
+2. **Translation memory** — `call_llm.py --tm tm.json` records every
+   `source → translation` pair; an identical source line is forcibly re-used
+   verbatim on later pages/chapters, and the bank persists across runs.
+3. **Repeat drift check** — `verify.py` groups identical source lines and flags
+   any that were translated differently, suggesting the most common wording as
+   canonical for a re-render of those bubbles.
 
 ## References
 

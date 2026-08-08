@@ -24,7 +24,6 @@ import httpx
 # Characters that suggest decorative/non-dialogue text
 DECORATIVE_PATTERN = re.compile(r"^[\.．…⋯•●○◎◇◆■□☆★♪♫♩†‡※〽️]+$")
 PAGE_NUM_PATTERN = re.compile(r"^\d+$")
-SHORT_SYMBOL_THRESHOLD = 5  # text shorter than this is likely decorative
 
 
 @dataclass
@@ -105,8 +104,6 @@ def analyze_pages(
         pa.avg_confidence = sum(confidences) / len(confidences) if confidences else 0.0
 
         # Heuristics for page type
-        non_decorative = [b for b in pa.blocks if not b.is_decorative]
-        short_blocks = [b for b in pa.blocks if b.text_len < SHORT_SYMBOL_THRESHOLD]
         all_decorative = pa.total_blocks > 0 and all(
             b.is_decorative or b.is_page_number for b in pa.blocks
         )
@@ -126,8 +123,10 @@ def analyze_pages(
             pa.is_empty = True
             pa.protect_reason = "no_ocr_text"
 
-        # Low average confidence
-        elif pa.avg_confidence < confidence_threshold and pa.total_blocks > 0:
+        # Low average confidence — only when we actually HAVE confidence values;
+        # a page with OCR text but no confidence data (e.g. after a Mistral
+        # rescan) must not be silently flagged as low-confidence.
+        elif confidences and pa.avg_confidence < confidence_threshold:
             pa.is_low_confidence = True
             pa.protect_reason = f"low_confidence({pa.avg_confidence:.2f})"
 

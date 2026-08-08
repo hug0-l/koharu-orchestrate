@@ -6,22 +6,16 @@ Usage:
 
     # Output grouped OCR text per chapter for agent summarization
     chapter.py detect --server http://localhost:4000 --json > chapters.json
-
-    # Apply chapter metadata to scene (tag pages with chapter number)
-    chapter.py detect --server http://localhost:4000 --apply-tags
 """
 
 import argparse
 import json
-import os
 import re
 import sys
 from dataclasses import dataclass, field
 from typing import Any
 
 import httpx
-
-# ── Chapter header detection patterns ──────────────────────
 
 # ── Chapter header detection patterns ──────────────────────
 # Conservative: only match explicit chapter markers.
@@ -88,17 +82,30 @@ def is_chapter_header(text: str) -> bool:
 
 MIN_BLOCKS_FOR_DIVIDER = 3    # pages with ≤ this many blocks may be dividers
 MAX_TEXT_LEN_FOR_DIVIDER = 30  # blocks shorter than this may be decorative
+# Sentence punctuation marks the block as dialogue, not a divider title.
+DIALOGUE_PUNCT = set("。！？…、?!：；～")
 
 
 def _page_is_divider(pages_data: dict, pid: str, all_blocks: list[TextBlock]) -> bool:
-    """Check if a page looks like a chapter divider (few very short blocks)."""
+    """Check if a page looks like a chapter divider (few very short blocks).
+
+    Deliberately conservative: a divider candidate must have few blocks, all
+    short, AND contain no sentence punctuation (a real divider page is a title,
+    not dialogue). This avoids flagging ordinary two-line dialogue pages.
+    """
     page_blocks = [b for b in all_blocks if b.page_id == pid]
     if not page_blocks:
         return False
     if len(page_blocks) > MIN_BLOCKS_FOR_DIVIDER:
         return False
-    # All blocks are short (decorative/page numbers)
-    return all(len(b.text.strip()) < MAX_TEXT_LEN_FOR_DIVIDER for b in page_blocks)
+    if any(b.is_page_number for b in page_blocks):
+        return False
+    # All blocks are short (decorative/title-like) and carry no dialogue markers
+    return all(
+        len(b.text.strip()) < MAX_TEXT_LEN_FOR_DIVIDER
+        and not (DIALOGUE_PUNCT & set(b.text))
+        for b in page_blocks
+    )
 
 
 def detect_chapters(
@@ -288,7 +295,7 @@ def output_json(va: VolumeAnalysis) -> dict[str, Any]:
             "label": ch.label,
             "label_text": ch.label_text,
             "page_range": [ch.start_page_index + 1, (ch.end_page_index or va.total_pages - 1) + 1],
-            "page_count": ch.end_page_index - ch.start_page_index + 1 if ch.end_page_index else 1,
+            "page_count": ch.end_page_index - ch.start_page_index + 1,
             "page_ids": ch.pages,
             "block_count": len(ch.blocks),
             "text_blocks": [
