@@ -115,12 +115,13 @@ class KoharuAPI:
     ) -> dict[str, Any]:
         """Poll until an operation completes or fails."""
         start = time.monotonic()
+        terminal = ("completed", "failed", "cancelled", "completed_with_errors")
         while True:
             ops = self.get_operations()
             for op in ops:
                 if op["id"] == op_id:
                     status = op["status"]
-                    if status in ("completed", "failed", "cancelled"):
+                    if status in terminal:
                         return op
             if time.monotonic() - start > timeout:
                 raise TimeoutError(f"Operation {op_id} did not complete within {timeout}s")

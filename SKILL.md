@@ -808,6 +808,24 @@ curl -s -X POST $KOHARU_URL/api/v1/projects/current/export \
 - **空手而歸處理**：subagent 整卷翻譯常回傳空（沒寫檔）。切片後只看哪些 slice 檔存在，缺的只補派，不必整卷重來。
 - **prompt 契約**：明寫「用 Write 工具建立檔案才算完成，回覆不被評分」；內嵌切片首/中/尾元素的原文做 1-based 錨點；要求輸出前自我檢查 key 範圍與條數。
 
+### run_volume.py — 一鍵跑完整卷（2026-08 pipeline 自動化）
+`scripts/run_volume.py` 讀 queue.json 條目，自動完成 import→detect→OCR→dump→切片→validate→merge→apply→lock→除字→render→QA→export→更新 queue：
+
+```bash
+<PFX> -m run_volume --queue ~/koharu-work/queue.json --id <volume_id>
+```
+
+- **翻譯仍是 agent 工作**：腳本會印出 slice 範圍與錨點後以 exit 3 停下，等 slice 檔齊全再重跑（`--skip-translate` 表示 slice 已存在，直接 merge）。
+- **除字 GPU→CPU 自動容錯**：內建 `wait_with_failover`——GPU Metal OOM 掉線時自動 `--cpu` 重啟、reopen 專案、續跑剩餘頁，不需人工介入。
+- **除字預分割**：GPU 先跑前 110 頁，之後自動切 CPU，避免 crash 浪費尾段。
+- **render 後自動 QA**：比對節點 `spriteTransform` vs `transform` 寬高比，>1.2 標為溢出並列報告。
+- **queue 欄位**：`font`（render 用字型）、`keep_project`（完成後是否保留 scene.bin 供翻修）、`work_dir`、`project_id`。
+- **resume**：`--inpaint-only` 只續跑除字；`--skip-translate` 跳過翻譯直接 merge 既有 slice + render。
+
+### import_epub 卷號模糊比對
+- EPUB 檔名含半形/組合假名（如 `ぼ` vs `ぼ`）時精確路徑會對不上。`find_epub_by_volume(dir, vol)` 依卷號 token 模糊匹配（支援 ` 4 ` / `第4巻` / `vol04`）。
+- 用法：`import_epub --input <目錄> --volume 4 --output ./pages/`，或 run_volume 在 `source` 路徑不存在時自動對 queue 條目的目錄模糊匹配。
+
 ---
 
 ## 常見問題
