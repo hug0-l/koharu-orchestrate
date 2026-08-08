@@ -826,6 +826,30 @@ curl -s -X POST $KOHARU_URL/api/v1/projects/current/export \
 - EPUB 檔名含半形/組合假名（如 `ぼ` vs `ぼ`）時精確路徑會對不上。`find_epub_by_volume(dir, vol)` 依卷號 token 模糊匹配（支援 ` 4 ` / `第4巻` / `vol04`）。
 - 用法：`import_epub --input <目錄> --volume 4 --output ./pages/`，或 run_volume 在 `source` 路徑不存在時自動對 queue 條目的目錄模糊匹配。
 
+### 保護標題美術／音效不被除字（protect.py）
+`comic-text-detector-seg` 常把裝飾性標題美術（title art）與狀聲詞/音效（SFX）當成文字泡泡框進 `segment` mask，inpaint 時一起擦掉，renderer 又會覆寫翻譯。`scripts/protect.py` 在 inpaint 前把受保護區域從 mask 挖掉 + 節點設 `visible:false`，讓原始美術原封不動：
+
+```bash
+# 保護特定節點（page:node 逗號分隔）
+<PFX> -m protect --server $KOHARU_URL --nodes <pid>:<nid>,<pid2>:<nid2>
+
+# 依 OCR 文字 regex 保護（例如全形片假名短音效）
+<PFX> -m protect --server $KOHARU_URL --match '^[ァ-ヶー]{1,6}$'
+
+# 保護整頁（封面/標題頁）
+<PFX> -m protect --server $KOHARU_URL --pages <pid>,<pid2>
+
+# 預覽不寫入
+<PFX> -m protect --server $KOHARU_URL --pages <pid> --dry-run
+```
+
+**run_volume 整合**：queue 條目加 `"protect": "work/protect.json"` 或傳 `--protect protect.json`，OCR 完成後、inpaint 前自動套用。`protect.json` 格式：`{"nodes":["pid:nid"],"pages":["pid"],"match":"regex"}`。
+
+**實作原理**：
+1. 抓每頁 `segment` mask blob（L 影像，白=除字區域），把受保護文字節點的 bbox 塗黑，`PUT /api/v1/pages/{id}/masks/segment` 重新上傳 → inpaint 會略過。
+2. 受保護節點 `patch {visible:false}` + 清空 translation → renderer 不會畫翻譯覆蓋。
+3. 用「受保護區暗像素比 vs 除字後」驗證：相同=美術保留；控制組（未保護）會下降。
+
 ---
 
 ## 常見問題

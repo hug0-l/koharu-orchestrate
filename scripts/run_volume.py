@@ -178,7 +178,7 @@ def prepare_pages(api: KoharuAPI, entry: dict[str, Any], work_dir: Path) -> tupl
 
 
 def run(entry_id: str, queue_path: str, skip_translate: bool, inpaint_only: bool,
-        port: int = 4000, dump_only: bool = False) -> int:
+        port: int = 4000, dump_only: bool = False, protect_file: str | None = None) -> int:
     q = json.load(open(queue_path))
     entry = next((e for e in q if e["id"] == entry_id), None)
     if not entry:
@@ -234,6 +234,17 @@ def run(entry_id: str, queue_path: str, skip_translate: bool, inpaint_only: bool
         opid = start_pipeline(api, ["comic-text-detector-seg", "paddle-ocr-vl-1.6", "yuzumarker-font-detection"])
         op = api.wait_for_operation(opid, poll_interval=45.0, timeout=5400)
         log(f"ocr: {op.get('status')}")
+
+        # ---- protect title art / SFX (before inpaint) ----
+        if protect_file or entry.get("protect"):
+            pf = Path(protect_file or entry["protect"])
+            if pf.exists():
+                import protect as P
+                spec = json.load(open(pf))
+                n = P.apply_spec(api, spec, dry_run=False)
+                log(f"protected {n} title/SFX nodes (see protect.json)")
+            else:
+                log(f"warning: protect file not found: {pf}")
 
         # ---- dump ----
         import call_llm as C
@@ -421,9 +432,10 @@ def main() -> int:
     ap.add_argument("--port", type=int, default=4000, help="Koharu server port (default 4000)")
     ap.add_argument("--dump-only", action="store_true",
                     help="only import/detect/OCR/dump+slices, then exit (for parallel prep)")
+    ap.add_argument("--protect", help="protect.json: {nodes:[...],pages:[...],match:regex}")
     args = ap.parse_args()
     return run(args.id, args.queue, args.skip_translate, args.inpaint_only,
-               port=args.port, dump_only=args.dump_only)
+               port=args.port, dump_only=args.dump_only, protect_file=args.protect)
 
 
 if __name__ == "__main__":
