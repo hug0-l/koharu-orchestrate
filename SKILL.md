@@ -759,6 +759,32 @@ curl -s -X POST $KOHARU_URL/api/v1/projects/current/export \
 - **務必用 `source: system` 且 `cached: true` 的字型**。Google Font（`cached: false`）未下載時 renderer 整句不畫（log：`no font found`），成品文字會消失。
 - 繁中圓體：`Yuanti TC`；繁中黑體：`.PingFang TC`；日式丸ゴ：`Hiragino Maru Gothic ProN`；手寫：`Hannotate TC`。用 `GET /api/v1/fonts` 檢查 `cached`，Google Font 可先 `POST /api/v1/google-fonts/{family}/fetch` 下載。
 
+### 字型／樣式偵測流程（如何落到 render）
+字型偵測是**管線第 3 步 `yuzumarker-font-detection`**（依賴第 1 步 detect 產生的 `TextBoxes`）。它把結果寫進每個文字節點的 `fontPrediction`，render 時由 renderer 讀取：
+
+```jsonc
+// 節點 kind.text 上的欄位（見 references/scene-types.md）
+"fontPrediction": {
+  "fontFamily": "Noto Sans",   // 偵測到的字型家族（不一定存在於系統）
+  "fontSizePx": 32,            // 原圖文字大小（px）
+  "textColor": { "r": 0, "g": 0, "b": 0 }   // 偵測到的文字顏色
+},
+"style": { "fontSize": 16, "textAlign": "left", "shaderEffect": null },  // 粗體/斜體等
+"detectedFontSizePx": 24.0,    // 另一份字號估計
+"renderedDirection": "horizontal"   // 直排/橫排
+```
+
+**偵測 → render 的對應規則（實測心得）：**
+1. `fontPrediction.fontFamily` 只是「建議」，renderer **不保證**該字型存在。fallback 優先序是 `defaultFont`（pipeline 參數）→ 系統內建 → 偵測字型。**結論：別指望偵測字型，直接用系統 `defaultFont`。**
+2. `fontSizePx` 與 `detectedFontSizePx` 是溢出元兇：偵測值常偏大（如 129px），`lockLayoutBox=false` 時 renderer 照此值畫 → 爆出泡泡。**所以 render 前必須全部 `lockLayoutBox:true` 強制縮放。**
+3. `style.shaderEffect`（bold/italic）與 `textColor` render 會沿用——翻譯寫回時別改這兩個欄位，才能保留粗體/顏色。
+4. 直排文字靠 `sourceDirection`/`renderedDirection`；譯成繁中後若想改橫排可 `patch renderedDirection`，但短句直排通常保留原樣較自然。
+
+**需要「跟原稿字型相近」時的可行做法：** Koharu 只支援「系統/Google 已下載」的字型做 render（`GET /api/v1/fonts` 看 `cached`）。想貼近原稿風格就選相近的系統字型當 `defaultFont`，例如：
+- 原稿丸ゴ手繪 → `Hiragino Maru Gothic ProN` / `Yuanti TC`
+- 原稿黑體 → `.PingFang TC` / `Noto Sans TC`
+- 原稿手寫感 → `Hannotate TC`
+
 ### Inpaint 失敗
 - 遮罩大的頁面在 Metal GPU 會 `Failed to create metal resource: Buffer`（OOM），嚴重時整台 server 被殺掉（無 log）。
 - 解法：只對失敗頁重試；仍失敗就重啟 Koharu 加 `--cpu`，用 CPU 處理那幾頁。專案進度存 `scene.bin`，重啟後 reopen 續跑。
