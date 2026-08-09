@@ -65,6 +65,7 @@ export WORK="$HOME/my-manga"
 |--------|---------|-------------|
 | `run_volume.py` | **一鍵跑完整卷**：import→detect→OCR→切片→validate→apply→除字(GPU→CPU 自動容錯)→render→QA→export→更新 queue | `httpx` |
 | `validate_batch.py` | subagent 翻譯批次稽核：0-based/1-based 錯位偵測、覆蓋率、重複/空白 key | `httpx` |
+| `classify.py` | 分類文字節點：只翻泡泡對話+旁白，SFX/標題/品牌一律保護（不除字不覆寫） | `httpx`, `Pillow` |
 | `import_epub.py` | 從漫畫 EPUB 提取圖片（含 zipfile 後備 + 卷號模糊比對） | `ebooklib`, `beautifulsoup4`, `Pillow` |
 | `import_pages.py` | 批次匯入圖片至 Koharu | `httpx` |
 | `glossary.py` | 術語表管理（fetch/import/template） | `httpx` |

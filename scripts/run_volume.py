@@ -178,7 +178,8 @@ def prepare_pages(api: KoharuAPI, entry: dict[str, Any], work_dir: Path) -> tupl
 
 
 def run(entry_id: str, queue_path: str, skip_translate: bool, inpaint_only: bool,
-        port: int = 4000, dump_only: bool = False, protect_file: str | None = None) -> int:
+        port: int = 4000, dump_only: bool = False, protect_file: str | None = None,
+        classify_mode: bool = False) -> int:
     q = json.load(open(queue_path))
     entry = next((e for e in q if e["id"] == entry_id), None)
     if not entry:
@@ -236,7 +237,16 @@ def run(entry_id: str, queue_path: str, skip_translate: bool, inpaint_only: bool
         log(f"ocr: {op.get('status')}")
 
         # ---- protect title art / SFX (before inpaint) ----
-        if protect_file or entry.get("protect"):
+        if classify_mode:
+            import classify as CL
+            scene = api.get_scene()
+            dump_tmp = work_dir / f"all_text_{entry_id}.json"
+            json.dump(CL.read_scene_items(api), open(dump_tmp, "w"), ensure_ascii=False, indent=1)
+            cl = CL.classify_scene(api, scene)
+            skip = [p for p, is_t in cl.items() if not is_t]
+            n = CL.protect_nodes(api, scene, skip, dry_run=False)
+            log(f"classify: {sum(1 for v in cl.values() if v)} translate, {n} skip+protected")
+        elif protect_file or entry.get("protect"):
             pf = Path(protect_file or entry["protect"])
             if pf.exists():
                 import protect as P
@@ -248,7 +258,15 @@ def run(entry_id: str, queue_path: str, skip_translate: bool, inpaint_only: bool
 
         # ---- dump ----
         import call_llm as C
-        items = C.read_scene_text(f"http://localhost:{port}", reading_order="rtl")
+        if classify_mode:
+            # dump only translate nodes (skip protected ones entirely)
+            import classify as CL
+            cl = CL.classify_scene(api, api.get_scene())
+            items = [o for o in C.read_scene_text(f"http://localhost:{port}", reading_order="rtl")
+                     if cl.get(f"{o['page_id']}:{o['node_id']}", False)]
+            log(f"classify: dumped {len(items)} translate-only items")
+        else:
+            items = C.read_scene_text(f"http://localhost:{port}", reading_order="rtl")
         dump_path = work_dir / f"all_text_{entry_id}.json"
         json.dump(items, open(dump_path, "w"), ensure_ascii=False, indent=1)
         log(f"dumped {len(items)} items -> {dump_path.name}")
@@ -433,9 +451,12 @@ def main() -> int:
     ap.add_argument("--dump-only", action="store_true",
                     help="only import/detect/OCR/dump+slices, then exit (for parallel prep)")
     ap.add_argument("--protect", help="protect.json: {nodes:[...],pages:[...],match:regex}")
+    ap.add_argument("--classify", action="store_true",
+                    help="translate only bubble text + narration; skip+protect SFX/title/brand")
     args = ap.parse_args()
     return run(args.id, args.queue, args.skip_translate, args.inpaint_only,
-               port=args.port, dump_only=args.dump_only, protect_file=args.protect)
+               port=args.port, dump_only=args.dump_only, protect_file=args.protect,
+               classify_mode=args.classify)
 
 
 if __name__ == "__main__":

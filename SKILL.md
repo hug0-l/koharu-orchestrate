@@ -881,6 +881,30 @@ pages = sorted({p.split(":")[0] for p in nodes})
 2. 受保護節點 `patch {visible:false}` + 清空 translation → renderer 不會畫翻譯覆蓋。
 3. 用「受保護區暗像素比 vs 除字後」驗證：相同=美術保留；控制組（未保護）會下降。
 
+### classify.py — 只翻譯泡泡對話與旁白，其餘不翻不畫
+`comic-text-detector` 會框到 SFX、標題美術、頁眉、品牌、目次等非對白文字。`scripts/classify.py` 自動分類每個文字節點，**只留對話泡泡 + 明顯旁白**給翻譯流程；其餘節點一律保護（挖 segment mask + `visible:false`），**原稿原封不動、不除字不覆寫**：
+
+```bash
+<PFX> -m classify \
+  --server $KOHARU_URL \
+  --dump work/all_text_vXX.json \
+  --slices work/slices_vXX.json \
+  --trans-dir work/trans/ \
+  --apply-protect        # 套用保護（挖 mask + 隱藏跳過節點）
+```
+
+**分類規則**（`classify_node`）：
+- **跳過（保護）**：
+  1. 含品牌/目次/版權標記（`コミックス`/`COMICS`/`BOOK☆WALKER`/`Cover Design`/`Special Thanks`/`初出`/`第一刷`/`二〇XX年`/`目次`/`あとがき`…）
+  2. 純片假名短音效（`^[ァ-ヶー・!！？]{1,8}$`，如 ドキドキ/ハイ）
+  3. 大字裝飾（fontSizePx ≥ 40 且 ≤30 字）
+  4. 直排單字標題（≥3 行、每行 ≤2 字、無假名助詞，如 淡/島/百/景）
+- **翻譯**：其餘全部——泡泡內對話（與 `bubble` mask 重疊 ≥0.3）+ 旁白框/一般句子。
+
+**整合 run_volume**：`--classify` 旗標，OCR 完成即分類+保護，`all_text` dump 只含翻譯節點、slice 索引只對應翻譯節點——**subagent 只會翻譯該翻的，非翻譯節點從頭到尾不被碰**。
+
+**驗證（awashima v01 實測）**：1006 節點 → 80 保護（封面/章節標題/SFX/頁眉全命中）、882 翻譯節點完整；隱藏節點零翻譯殘留、缺 inpaint 頁 0。
+
 ---
 
 ## 常見問題
