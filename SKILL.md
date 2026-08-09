@@ -851,6 +851,31 @@ curl -s -X POST $KOHARU_URL/api/v1/projects/current/export \
 - 用 `--match` 依 OCR 文字 regex 批量選節點（例：`'^[ァ-ヶー]{1,8}$'` 純片假名音效）。
 - 驗證（by-node 實測）：SFX 節點區域暗像素比 source=inpainted=rendered=0.0201 分毫不差，同頁對白全部有翻譯。
 
+**全書自動套用（2026-08 批量實測，24 卷）**：
+`protect.py` 內建兩個自動偵測函式，適合對整批書一次套用：
+- `detect_title_nodes(scene)` → 回傳 `["page:node", ...]`：**by-node 安全偵測**。節點含品牌/章節標記（`第X話`、`目次`、`コミックス`、`BOOK☆WALKER`、`初出`、`第一刷`、`二〇XX年`…）**或** 大字號短文字（fontSizePx≥45 且 ≤30 字）才保護。對白（小字、長句、助詞）永不觸發。
+- `detect_title_pages(scene)` → 回傳整頁清單（只限「整頁皆為裝飾」的頁，用於封面/目次）。
+
+**批次處理 SOP（每本）**：
+```python
+import protect as P
+from koharu_api import KoharuAPI
+api = KoharuAPI("http://localhost:4000")
+api.open_project("<proj_id>")
+scene = api.get_scene()
+nodes = P.detect_title_nodes(scene)      # by-node，最安全
+P.apply_spec(api, {"nodes": nodes})      # 挖 mask + visible:false
+pages = sorted({p.split(":")[0] for p in nodes})
+# 重除字 + 重 render 那些頁（保護頁數不多，可用 --cpu 避免 GPU OOM）
+```
+
+**踩坑筆記（實測 24 卷）**：
+1. **整頁偵測要極嚴格**：初版用「頁面含 第X話 就整頁保護」誤傷大量對白（某卷保護到 255 節點含對話）——**一律用 by-node**，除非確認該頁 100% 是封面/目次。
+2. **protect 是破壞性操作**（清 translation + visible:false）：誤保護後用 `P.restore_all(api)` 復原 visible，並從 `work/translations_*.json` 重新 apply 翻譯。
+3. **頁眉品牌字**（如「安達としまれう」「上伊那ぼたん」）每頁出現會被當品牌保護——這是**正確**的（頁眉屬裝飾，本就不該翻）。
+4. GPU 除字大量頁（>100）仍會 Metal OOM：整批用 `--cpu` 最穩，保護頁數少時 CPU 也很快。
+5. 驗證：`visible:false` 節點數應 ≪ 可見翻譯數；`hidden WITH translation` 必須為 0（保護節點不該殘留翻譯）；缺 inpaint 頁數應為 0。
+
 **實作原理**：
 1. 抓每頁 `segment` mask blob（L 影像，白=除字區域），把受保護文字節點的 bbox 塗黑，`PUT /api/v1/pages/{id}/masks/segment` 重新上傳 → inpaint 會略過。
 2. 受保護節點 `patch {visible:false}` + 清空 translation → renderer 不會畫翻譯覆蓋。

@@ -91,6 +91,82 @@ def collect_regions(scene: dict, targets: dict[str, list[str]]) -> dict[str, lis
     return out
 
 
+def restore_all(api: KoharuAPI, page_ids: list[str] | None = None) -> int:
+    """Undo protection: set every text node visible:true (does NOT restore
+    cleared translations — caller must re-apply translations)."""
+    scene = fetch_scene(api)
+    pages = scene["scene"]["pages"]
+    if page_ids:
+        pages = {pid: pages[pid] for pid in page_ids if pid in pages}
+    ops = []
+    for pid, page in pages.items():
+        for nid, node in page.get("nodes", {}).items():
+            if "text" in node.get("kind", {}) and node.get("visible") is False:
+                ops.append({"updateNode": {"page": pid, "id": nid,
+                                           "patch": {"visible": True}, "prev": {}}})
+    for i in range(0, len(ops), 100):
+        api.client.post("/api/v1/history/apply",
+                        json={"batch": {"label": "restore-visible", "ops": ops[i:i + 100]}})
+    return len(ops)
+
+
+def detect_title_nodes(scene: dict) -> list[str]:
+    """Auto-detect title-art / cover / TOC / chapter-title NODES (by-node, safe).
+
+    Protects only individual nodes that are unmistakably decorative: a node is
+    protected iff it (a) contains a brand/TOC/第X話 marker, OR (b) is a large
+    short text (fontSizePx >= 45). Dialogue nodes (particles, long lines, small
+    font) are never touched, so pages mixing title + dialogue stay correct.
+    Returns ["page:node", ...].
+    """
+    brand = re.compile(
+        r'(第\s*\d+\s*話|目次|あとがき|巻頭|特典|コミックス|COMICS|BOOK☆WALKER|'
+        r'Contents|INDEX|Cover Design|Special Thanks|初出|第一刷|二〇[一二三四五六七八九十]+年)'
+    )
+    out = []
+    for pid, page in scene["scene"]["pages"].items():
+        for nid, node in page.get("nodes", {}).items():
+            if "text" not in node.get("kind", {}):
+                continue
+            t = node["kind"]["text"]
+            joined = (t.get("text") or "").replace("\n", "")
+            if not joined:
+                continue
+            fs = (t.get("fontPrediction") or {}).get("fontSizePx") or 0
+            is_brand = bool(brand.search(joined))
+            is_big_short = fs >= 45 and len(joined) <= 30
+            if is_brand or is_big_short:
+                out.append(f"{pid}:{nid}")
+    return out
+
+
+def detect_title_pages(scene: dict) -> list[str]:
+    """Auto-detect title-art / cover / TOC / chapter-title pages.
+
+    Only pages that are *entirely* decorative are protected (whole-page). A
+    page is protected only if EVERY text node looks like title/brand art:
+    short text, and at least one node is a brand/TOC/第X話 marker or very
+    large font. Pages mixing dialogue are left alone (protect those by node).
+    """
+    brand = re.compile(r'(第\s*\d+\s*話|目次|あとがき|巻頭|特典|コミックス|COMICS|Contents|INDEX|BOOK☆WALKER)')
+    out = []
+    for pid, page in scene["scene"]["pages"].items():
+        texts = [n for n in page.get("nodes", {}).values() if "text" in n.get("kind", {})]
+        if not texts:
+            continue
+        joined = "|".join((n["kind"]["text"].get("text") or "") for n in texts)
+        sizes = [(n["kind"]["text"].get("fontPrediction") or {}).get("fontSizePx") or 0 for n in texts]
+        has_brand = bool(brand.search(joined))
+        has_big = any(s and s >= 45 for s in sizes)
+        # "entirely decorative": every node is short (title-ish) OR part of a brand block
+        all_short = all((n["kind"]["text"].get("text") or "").count("\n") <= 3 and
+                        len((n["kind"]["text"].get("text") or "").replace("\n", "")) <= 40
+                        for n in texts)
+        if (has_brand or has_big) and all_short and len(texts) <= 6:
+            out.append(pid)
+    return out
+
+
 def apply_spec(api: KoharuAPI, spec: dict, dry_run: bool = False) -> int:
     """Apply a protection spec dict {nodes:[page:node], pages:[...], match:regex}.
     Returns number of protected nodes."""
