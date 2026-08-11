@@ -909,6 +909,27 @@ pages = sorted({p.split(":")[0] for p in nodes})
 
 **驗證（awashima v01 實測）**：1006 節點 → 80 保護（封面/章節標題/SFX/頁眉全命中）、882 翻譯節點完整；隱藏節點零翻譯殘留、缺 inpaint 頁 0。
 
+**批量套用陷阱與修復（2026-08 實測 25 卷）**：
+> ⚠️ **protect_nodes 是破壞性操作**——它會設 `visible:false` + 清空 translation。批量套用時若 classify 誤判（或分類規則版本在批次中途變更），會把**有翻譯的對話節點也隱藏掉**，造成「源檔有翻譯但 scene 看不到」。
+>
+> 實測案例：kamiinabotan-v07 有 346 個有翻譯節點被誤隱藏。根因：auto_classify 批次跑動時 `restore_all` 未生效或 protect 邏輯污染。
+
+**修復 SOP（以源檔為權威，25 卷全部驗證通過）**：
+```python
+tr_map = load_translations(series, vol)   # {page:node -> translation}
+# 1) 所有有翻譯的節點：visible:true + 套翻譯（覆寫任何隱藏狀態）
+ops = [{"updateNode":{"page":pid,"id":nid,
+        "patch":{"visible":True,"data":{"text":{"translation":val}}}, "prev":{}}}
+       for key,val in tr_map.items() if val.strip() and node_exists]
+# 2) 只保護「源檔無翻譯 + classify 判跳過」的節點
+cl = classify_scene(api, scene)
+skip = [p for p,v in cl.items() if not v and not tr_map.get(p,"")]
+protect_nodes(api, scene, skip)
+# 3) 重除字 + 重 render 那些頁（CPU），驗證 hidden_with_tr == 0
+```
+
+**關鍵原則**：**translations_*.json 是唯一真相源**。protect/classify 只決定「哪些節點不翻譯、原稿保留」；判斷「該節點有沒有翻譯」永遠以源檔為準，不要信任 scene 當下狀態。批量後必驗 `hidden_with_tr == 0`（有翻譯卻隱藏 = 缺失）與 `missing_inpaint == 0`。
+
 ---
 
 ## 常見問題
