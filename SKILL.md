@@ -882,6 +882,10 @@ pages = sorted({p.split(":")[0] for p in nodes})
 3. 用「受保護區暗像素比 vs 除字後」驗證：相同=美術保留；控制組（未保護）會下降。
 
 ### classify.py — 只翻譯泡泡對話與旁白，其餘不翻不畫
+> **標準策略（2026-08 確立，未來專案一律沿用）**：
+> **偵測框到的文字全部顯示、原稿保留；只有對話泡泡 + 明顯旁白被翻譯。**
+> 具體：SFX、標題美術、頁眉、品牌、目次等非對白節點 → 挖掉 segment mask（inpaint 不碰）+ `visible:false`（renderer 不覆寫）→ **原稿原樣留在成品裡**；對話/旁白 → 正常除字 + 翻譯 + render。
+
 `comic-text-detector` 會框到 SFX、標題美術、頁眉、品牌、目次等非對白文字。`scripts/classify.py` 自動分類每個文字節點，**只留對話泡泡 + 明顯旁白**給翻譯流程；其餘節點一律保護（挖 segment mask + `visible:false`），**原稿原封不動、不除字不覆寫**：
 
 ```bash
